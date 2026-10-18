@@ -169,7 +169,7 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
       break;
     }
     case "commit":
-      if (level.id !== "stash") addNode(graph.currentBranch, [current]);
+      addNode(graph.currentBranch, [current]);
       break;
     case "stash":
     case "review":

@@ -14,6 +14,6 @@ export interface LevelDefinition {
   action: string;
   instruction: string;
   color: string;
-  graphKind: "commit" | "branch" | "merge" | "remote" | "reset" | "tag";
+  graphKind: "commit" | "branch" | "merge" | "remote" | "reset" | "tag" | "stash" | "review";
   quiz: [QuizQuestion, QuizQuestion, QuizQuestion];
 }

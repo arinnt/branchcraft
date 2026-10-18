@@ -3,7 +3,7 @@ import type { LevelDefinition } from "./types";
 const level: LevelDefinition = {
   id: "rebase",
   term: "Rebase",
-  definition: "Rebasing reapplies commits onto a new base, creating a rewritten, linear history.",
+  definition: "Rebasing reapplies commits onto a new base, rewriting them and often creating a linear history.",
   metaphor: "Lift your experiment jars onto the latest main shelf, one recipe card at a time.",
   command: "git rebase <base>",
   action: "Re-stack the jars",

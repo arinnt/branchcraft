@@ -9,7 +9,7 @@ const level: LevelDefinition = {
   action: "Submit the tasting tray",
   instruction: "Push the tray to the review table and invite a teammate to taste.",
   color: "#65b8cd",
-  graphKind: "merge",
+  graphKind: "review",
   quiz: [
     { prompt: "What is a pull request for?", options: ["Discussing and reviewing proposed changes", "Rewinding a local file", "Cloning a repository"], answer: 0, explanation: "A pull request provides a place to review and discuss changes." },
     { prompt: "Must a pull request be merged immediately?", options: ["No, it can be discussed and revised", "Yes, automatically", "Only after a tag"], answer: 0, explanation: "Reviewers can request changes or approve before merge." },

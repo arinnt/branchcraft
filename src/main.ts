@@ -1,5 +1,6 @@
 import { CanvasStage, drawCommitGraph, loadGame, newGraph, recordAction, saveGame, type SavedGame } from "./engine";
 import { levels } from "./levels";
+import commitLevel from "./levels/commit";
 import "./style.css";
 
 type Screen = "lesson" | "recap" | "quiz" | "passed" | "glossary" | "sandbox";
@@ -15,6 +16,7 @@ let actionCount = 0;
 let quizIndex = 0;
 let feedback = "";
 let stage: CanvasStage | undefined;
+let graphResizeObserver: ResizeObserver | undefined;
 let sandboxJars = 1;
 let sandboxPipes = 1;
 
@@ -31,8 +33,12 @@ function persist(): void {
   saveGame(progress);
 }
 
+function unlockedLevelCount(): number {
+  return Math.max(0, Math.min(progress.unlockedLevel + 1, levels.length));
+}
+
 function navigation(): string {
-  const unlocked = Math.min(progress.unlockedLevel + 1, levels.length);
+  const unlocked = unlockedLevelCount();
   return `
     <header class="topbar">
       <button class="brand" data-screen="lesson" aria-label="Branchcraft home">
@@ -48,13 +54,13 @@ function navigation(): string {
 }
 
 function sidebar(): string {
-  const unlocked = Math.min(progress.unlockedLevel, levels.length - 1);
+  const unlocked = unlockedLevelCount();
   return `
     <aside class="lesson-rail" aria-label="Course levels">
-      <div class="rail-heading"><span>FIELD NOTES</span><span>${String(unlocked + 1).padStart(2, "0")} / ${levels.length}</span></div>
+      <div class="rail-heading"><span>FIELD NOTES</span><span>${String(unlocked).padStart(2, "0")} / ${levels.length}</span></div>
       <ol class="level-list">
         ${levels.map((level, index) => {
-          const isLocked = index > progress.unlockedLevel;
+          const isLocked = index >= unlocked;
           const isDone = progress.completed.includes(index);
           const selected = index === currentIndex && screen !== "glossary" && screen !== "sandbox";
           return `<li><button class="level-link ${selected ? "selected" : ""} ${isLocked ? "locked" : ""} ${isDone ? "completed" : ""}" ${isLocked ? "disabled" : `data-level="${index}"`}>
@@ -155,7 +161,7 @@ function passedContent(): string {
 }
 
 function glossaryContent(): string {
-  const learned = levels.slice(0, Math.min(progress.unlockedLevel + 1, levels.length));
+  const learned = levels.slice(0, unlockedLevelCount());
   return `
     <section class="wide-content">
       <div class="level-kicker"><span>FIELD NOTES</span><span class="kicker-line"></span><span>${learned.length} OF ${levels.length} UNLOCKED</span></div>
@@ -195,6 +201,8 @@ function sandboxContent(): string {
 function render(): void {
   stage?.dispose();
   stage = undefined;
+  graphResizeObserver?.disconnect();
+  graphResizeObserver = undefined;
   const noRail = screen === "glossary" || screen === "sandbox";
   const content = screen === "lesson" ? lessonContent()
     : screen === "recap" ? recapContent()
@@ -205,7 +213,11 @@ function render(): void {
   app!.innerHTML = `${navigation()}<div class="app-shell ${noRail ? "no-rail" : ""}">${noRail ? "" : sidebar()}<main class="main-area">${content}</main></div><footer class="site-footer"><span>BRANCHCRAFT <span class="footer-sep">/</span> A LITTLE GIT, HANDS-ON</span><span>MADE OF PIXELS, PARTICLES &amp; PROCEDURAL SOUNDS</span></footer>`;
 
   const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
-  if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
+  if (graphCanvas) {
+    drawCommitGraph(graphCanvas, progress.graph);
+    graphResizeObserver = new ResizeObserver(() => drawCommitGraph(graphCanvas, progress.graph));
+    graphResizeObserver.observe(graphCanvas);
+  }
 
   const gameCanvas = app!.querySelector<HTMLCanvasElement>(".game-canvas");
   if (gameCanvas) {
@@ -222,7 +234,7 @@ function render(): void {
 function performAction(): void {
   if (screen !== "lesson" || actionCount >= 3) return;
   actionCount += 1;
-  recordAction(progress.graph, levels[currentIndex]!);
+  recordAction(progress.graph, levels[currentIndex]!, false, actionCount);
   persist();
   stage?.setProgress(actionCount);
   const stepLabel = app!.querySelector<HTMLElement>("[data-step-label]");
@@ -284,7 +296,7 @@ app!.addEventListener("click", (event) => {
   }
   if (target.dataset.level !== undefined) {
     const index = Number(target.dataset.level);
-    if (index <= progress.unlockedLevel) {
+    if (Number.isInteger(index) && index >= 0 && index < levels.length && index <= progress.unlockedLevel) {
       currentIndex = index;
       actionCount = 0;
       quizIndex = 0;
@@ -335,7 +347,7 @@ app!.addEventListener("click", (event) => {
     if (action === "pipe") sandboxPipes = Math.min(sandboxPipes + 1, 5);
     stage?.sandboxAction(action);
     if (action === "commit") {
-      recordAction(progress.graph, levels[2]! , true);
+      recordAction(progress.graph, commitLevel, true);
       persist();
       const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
       if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);

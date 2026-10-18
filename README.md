@@ -25,7 +25,7 @@ The glossary contains unlocked Git terms and command reminders. Course progress 
 
 ### Sandbox and keyboard
 
-Sandbox has every action unlocked, a separate repository, undo/redo, and downloadable plain-text command history. Rejected commands are included in history. Switch between lessons and sandbox without losing either repository during the session.
+Sandbox has every action unlocked, a separate repository, undo/redo, and downloadable plain-text command history. Rejected commands are included in history. Choose **Empty directory** to practice init or clone while preserving the origin server. Switch between lessons and sandbox without losing either repository during the session.
 
 Tab reaches commits, branch labels, inputs, and controls. Arrow keys move commit selection; Enter checks out the focused commit or branch, and Space selects a commit. Outside input fields: **E** edits, **S** stages, **C** commits, **B** creates a branch, and **M** merges. Current working-state actions are highlighted, but invalid actions remain available so you can learn from errors. Motion respects the reduced-motion preference.
 

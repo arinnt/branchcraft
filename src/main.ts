@@ -65,7 +65,7 @@ function render(): void {
     ${screen === "glossary" ? `<h1>Glossary</h1><p>Terms you have unlocked, grounded in commit history.</p><div class="glossary">${levels.slice(0, progress.unlockedLevel + 1).map(item =>
       `<article><h2>${esc(item.term)}</h2><p>${esc(item.definition)}</p><code>${esc(item.command)}</code></article>`).join("")}</div>` :
     `<div class="heading"><div><p class="eyebrow">${screen === "sandbox" ? "FREE GRAPH · ALL ACTIONS UNLOCKED" : `CHALLENGE ${current + 1} / 17`}</p><h1>${screen === "sandbox" ? "Sandbox" : esc(level.term)}</h1><p>${screen === "sandbox" ? "Experiment with history. Every action uses the same Git rules as the lessons." : esc(level.instruction)}</p></div>
-      <div class="level-tools">${screen === "lesson" ? '<button id="reset-level">Reset level</button><button id="hint">Hint</button>' : '<button id="undo">Undo</button><button id="redo">Redo</button><button id="export">Export history</button><button id="clear-sandbox">New graph</button>'}</div></div>
+      <div class="level-tools">${screen === "lesson" ? '<button id="reset-level">Reset level</button><button id="hint">Hint</button>' : '<button id="undo">Undo</button><button id="redo">Redo</button><button id="export">Export history</button><button id="clear-sandbox">New graph</button><button id="empty-sandbox">Empty directory</button>'}</div></div>
     <p id="notice" role="status" aria-live="polite"></p>
     <div class="status" id="status"></div>
     <div id="graph-host" class="graph-host"></div>
@@ -213,9 +213,13 @@ app.addEventListener("click", event => {
       const link = document.createElement("a"); link.href = url; link.download = "branchcraft-history.txt"; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000); break;
     }
-    case "clear-sandbox":
+    case "clear-sandbox": case "empty-sandbox": {
       undo.push({ graph: structuredClone(sandboxGraph), history: structuredClone(sandboxHistory) });
-      redo = []; sandboxGraph = newGraph(); sandboxHistory = []; selected = headId(sandboxGraph); update(); break;
+      const origin = structuredClone(sandboxGraph.origin);
+      redo = []; sandboxGraph = newGraph();
+      if (button.id === "empty-sandbox") sandboxGraph = { ...sandboxGraph, initialized: false, commits: [], branches: {}, tracking: {}, origin };
+      sandboxHistory = []; selected = headId(sandboxGraph); update(); break;
+    }
     case "reset-progress":
       if (confirm("Reset all course progress?")) { progress.unlockedLevel = 0; progress.completed = []; saveGame(progress); openLevel(0); }
       break;

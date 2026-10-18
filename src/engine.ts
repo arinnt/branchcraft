@@ -6,26 +6,50 @@ const svg = <K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap
 
 type Point = { x: number; y: number };
 
-function layout(commits: Commit[]): Map<string, Point> {
+function visibleCommits(graph: Graph): Commit[] {
+  const objects = new Map([...graph.origin.commits, ...graph.commits].map(commit => [commit.id, commit]));
+  const pending = [
+    ...Object.values(graph.branches), ...Object.values(graph.tags),
+    ...Object.values(graph.tracking), ...Object.values(graph.origin.branches),
+    headId(graph), ...(graph.conflict ? [graph.conflict.target] : []),
+  ];
+  const reachable = new Set<string>();
+  while (pending.length) {
+    const id = pending.pop()!;
+    const commit = objects.get(id);
+    if (!commit || reachable.has(id)) continue;
+    reachable.add(id);
+    pending.push(...commit.parents);
+  }
+  return [...objects.values()].filter(commit => reachable.has(commit.id));
+}
+
+function layout(commits: Commit[], graph: Graph): Map<string, Point> {
+  const refs = [...Object.values(graph.branches), ...Object.values(graph.tracking), ...Object.values(graph.tags),
+    ...Object.entries(graph.origin.branches).filter(([name, id]) => graph.tracking[`origin/${name}`] !== id).map(([, id]) => id),
+    ...("commit" in graph.head ? [graph.head.commit] : [])];
+  const maxRefs = Math.max(1, ...commits.map(commit => refs.filter(id => id === commit.id).length));
+  const top = 130 + Math.max(0, maxRefs - 2) * 23;
+  const laneHeight = Math.max(85, maxRefs * 23 + 50);
   const points = new Map<string, Point>();
   const occupied = new Map<number, Set<number>>();
   const visiting = new Set<string>();
   const place = (commit: Commit): Point => {
     const existing = points.get(commit.id);
     if (existing) return existing;
-    if (visiting.has(commit.id)) return { x: 65, y: 90 };
+    if (visiting.has(commit.id)) return { x: 65, y: top };
     visiting.add(commit.id);
     const parents = commit.parents.flatMap(id => {
       const parent = commits.find(item => item.id === id);
       return parent ? [place(parent)] : [];
     });
     const depth = parents.length ? Math.max(...parents.map(point => (point.x - 65) / 145)) + 1 : 0;
-    let lane = parents[0] ? (parents[0].y - 90) / 85 : 0;
+    let lane = parents[0] ? (parents[0].y - top) / laneHeight : 0;
     const used = occupied.get(depth) ?? new Set<number>();
     while (used.has(lane)) lane++;
     used.add(lane);
     occupied.set(depth, used);
-    const point = { x: 65 + depth * 145, y: 90 + lane * 85 };
+    const point = { x: 65 + depth * 145, y: top + lane * laneHeight };
     points.set(commit.id, point);
     visiting.delete(commit.id);
     return point;
@@ -43,6 +67,7 @@ export class GraphCanvas {
   private graph: Graph;
   private nodes = new Map<string, SVGGElement>();
   private labels = new Map<string, SVGGElement>();
+  private edges = new Map<string, SVGPathElement>();
   private observer: ResizeObserver;
 
   constructor(
@@ -73,13 +98,10 @@ export class GraphCanvas {
   update(graph: Graph, selected: string): void {
     this.graph = graph;
     this.selected = selected;
-    const commits = [...graph.commits];
-    graph.origin.commits.forEach(commit => {
-      if (!commits.some(item => item.id === commit.id)) commits.push(commit);
-    });
-    const positions = layout(commits);
-    const goalCommits = this.goal ? [...this.goal.commits, ...this.goal.origin.commits.filter(commit => !this.goal!.commits.some(item => item.id === commit.id))] : [];
-    const goalPositions = layout(goalCommits);
+    const commits = visibleCommits(graph);
+    const positions = layout(commits, graph);
+    const goalCommits = this.goal ? visibleCommits(this.goal) : [];
+    const goalPositions = this.goal ? layout(goalCommits, this.goal) : new Map<string, Point>();
     const points = [...positions.values(), ...goalPositions.values()];
     const width = Math.max(650, ...points.map(point => point.x + 130));
     const actualHeight = Math.max(260, ...[...positions.values()].map(point => point.y + 110));
@@ -96,7 +118,7 @@ export class GraphCanvas {
     layer: SVGGElement, commits: Commit[], graph: Graph,
     points: Map<string, Point>, offset: number, ghost: boolean,
   ): void {
-    layer.querySelectorAll(".edge, .graph-title").forEach(node => node.remove());
+    layer.querySelectorAll(".graph-title").forEach(node => node.remove());
     const title = svg("text");
     title.setAttribute("class", "graph-title");
     title.setAttribute("x", "24");
@@ -107,15 +129,20 @@ export class GraphCanvas {
     if (!ghost) this.nodes.forEach((node, id) => {
       if (!liveIds.has(id)) { node.remove(); this.nodes.delete(id); }
     });
+    const edgeKeys = new Set<string>();
     commits.forEach(commit => {
       const point = points.get(commit.id)!;
       commit.parents.forEach(parent => {
         const from = points.get(parent);
         if (!from) return;
-        const edge = svg("path");
+        const key = `${parent}:${commit.id}`;
+        edgeKeys.add(key);
+        const existing = ghost ? undefined : this.edges.get(key);
+        const edge = existing ?? svg("path");
         edge.setAttribute("class", "edge");
         edge.setAttribute("d", `M ${from.x} ${from.y + offset} C ${from.x + 65} ${from.y + offset}, ${point.x - 65} ${point.y + offset}, ${point.x} ${point.y + offset}`);
-        layer.insertBefore(edge, layer.firstChild);
+        if (!existing) layer.insertBefore(edge, layer.firstChild);
+        if (!ghost) this.edges.set(key, edge);
       });
       let group = ghost ? undefined : this.nodes.get(commit.id);
       if (!group) {
@@ -143,6 +170,9 @@ export class GraphCanvas {
       group.setAttribute("aria-pressed", String(!ghost && commit.id === this.selected));
       group.style.transform = `translate(${point.x}px, ${point.y + offset}px)`;
     });
+    if (!ghost) this.edges.forEach((edge, key) => {
+      if (!edgeKeys.has(key)) { edge.remove(); this.edges.delete(key); }
+    });
     const refs = [
       ...Object.entries(graph.branches).map(([name, id]) => ({ name, id, checkout: name, remote: false })),
       ...Object.entries(graph.tracking).map(([name, id]) => ({ name, id, checkout: id, remote: true })),
@@ -158,7 +188,7 @@ export class GraphCanvas {
       if (!point) return;
       const stack = stacks.get(ref.id) ?? 0;
       stacks.set(ref.id, stack + 1);
-      const key = ref.name;
+      const key = `${ref.remote ? "remote" : "local"}:${ref.name}`;
       labelKeys.add(key);
       let label = ghost ? undefined : this.labels.get(key);
       const fresh = !label;
@@ -201,7 +231,7 @@ export class GraphCanvas {
     if (event.key === " ") { event.preventDefault(); this.onSelect(id); return; }
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
     event.preventDefault();
-    const ids = this.graph.commits.map(commit => commit.id);
+    const ids = visibleCommits(this.graph).filter(commit => this.graph.commits.some(local => local.id === commit.id)).map(commit => commit.id);
     const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
     const next = ids[(ids.indexOf(id) + delta + ids.length) % ids.length];
     if (next) { this.onSelect(next); this.nodes.get(next)?.focus(); }

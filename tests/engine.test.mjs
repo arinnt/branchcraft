@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cloneGraph, headId, matchesGoal, newGraph, operate } from "../src/graph.ts";
+import { loadGame, saveGame } from "../src/save.ts";
 
 function run(graph, action, target, name) {
   const before = structuredClone(graph);
@@ -32,7 +33,7 @@ function current(graph) {
 
 function empty(origin = { branches: {}, commits: [] }) {
   return {
-    ...newGraph(), commits: [], branches: {}, initialized: false, origin,
+    ...newGraph(), commits: [], branches: {}, initialized: false, origin, tracking: {},
   };
 }
 
@@ -56,6 +57,10 @@ test("newGraph has every API field, an empty root, and independent storage", () 
   assert.equal(graph.initialized, true);
   assert.equal(graph.dirty, false);
   assert.equal(graph.staged, false);
+  assert.deepEqual(graph.origin.branches, { main: "c0" });
+  assert.deepEqual(graph.tracking, { "origin/main": "c0" });
+  assert.deepEqual(graph.origin.commits, graph.commits);
+  assert.notEqual(graph.origin.commits[0], graph.commits[0]);
   graph.working.x = "x";
   assert.deepEqual(newGraph().working, {});
 });
@@ -170,6 +175,28 @@ test("invalid and duplicate refs/revisions fail atomically", () => {
   }
   reject(newGraph(), "reset");
   assert.equal(run(newGraph(), "tag", "HEAD^0", "root").tags.root, "c0");
+});
+
+test("prototype-looking refs and file paths remain ordinary own properties", () => {
+  const originalPrototype = Object.getPrototypeOf({});
+  let graph = save(newGraph(), "__proto__", "safe file contents");
+  assert.equal(Object.hasOwn(current(graph).tree, "__proto__"), true);
+  assert.equal(current(graph).tree.__proto__, "safe file contents");
+  assert.equal(Object.getPrototypeOf(current(graph).tree), originalPrototype);
+  graph = run(graph, "branch", undefined, "__proto__");
+  graph = run(graph, "tag", undefined, "__proto__");
+  assert.equal(Object.hasOwn(graph.branches, "__proto__"), true);
+  assert.equal(Object.hasOwn(graph.tags, "__proto__"), true);
+  graph = run(graph, "checkout", "__proto__");
+  assert.deepEqual(graph.head, { branch: "__proto__" });
+  graph = save(graph, "constructor", "ordinary file");
+  graph = run(graph, "branch", undefined, "constructor");
+  graph = run(graph, "checkout", "constructor");
+  assert.equal(graph.working.constructor, "ordinary file");
+  assert.equal(Object.getPrototypeOf(graph.branches), originalPrototype);
+  assert.equal(Object.getPrototypeOf(graph.working), originalPrototype);
+  assert.equal(Object.getPrototypeOf({}), originalPrototype);
+  assert.equal(matchesGoal(graph, renamed(graph)), true);
 });
 
 test("dirty or staged checkout/merge/rebase/pull reject without losing files", () => {
@@ -802,4 +829,92 @@ test("goals enforce shared-node identity rather than just equal depths or counts
   const dangling = cloneGraph(shared);
   dangling.branches.main = "missing";
   assert.equal(matchesGoal(shared, dangling), false);
+});
+
+function withStorage(storage, callback) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  try {
+    callback();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else delete globalThis.localStorage;
+  }
+}
+
+test("saveGame/loadGame round-trip progress at the versioned key and reset it", () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  withStorage(storage, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+    const progress = { unlockedLevel: 4, completed: [0, 2, 3] };
+    saveGame(progress);
+    assert.deepEqual([...values.keys()], ["branchcraft-save-v2"]);
+    assert.deepEqual(loadGame(17), progress);
+    assert.deepEqual(progress, { unlockedLevel: 4, completed: [0, 2, 3] });
+    saveGame({ unlockedLevel: 0, completed: [] });
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+  });
+});
+
+test("loadGame ignores legacy saves, malformed JSON and invalid progress shapes", () => {
+  withStorage({ getItem: (key) => key === "branchcraft-save" ? '{"unlockedLevel":8,"completed":[0]}' : null }, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+  });
+  for (const value of [
+    "{broken", "null", "false", "42", '"text"', "[]", "{}",
+    '{"unlockedLevel":"4","completed":[]}', '{"unlockedLevel":1.5,"completed":[]}',
+    '{"unlockedLevel":4,"completed":"bad"}',
+  ]) {
+    withStorage({ getItem: () => value }, () => {
+      assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] }, value);
+    });
+  }
+});
+
+test("loadGame clamps progress and filters, deduplicates, and bounds completion indices", () => {
+  withStorage({
+    getItem: () => JSON.stringify({
+      unlockedLevel: 99,
+      completed: [-1, 0, 0, 1, 2, 3, 16, 17, "1", null, 1.2],
+      graph: { stale: "graph snapshots must not be restored" },
+    }),
+  }, () => {
+    assert.deepEqual(loadGame(3), { unlockedLevel: 2, completed: [0, 1, 2] });
+  });
+  withStorage({ getItem: () => '{"unlockedLevel":1,"completed":[0,1,2,3]}' }, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 1, completed: [0, 1] });
+  });
+  withStorage({ getItem: () => '{"unlockedLevel":-10,"completed":[-1,0,1]}' }, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [0] });
+  });
+});
+
+test("blocked, missing, and throwing browser storage never prevent play", () => {
+  withStorage({
+    getItem: () => { throw new Error("storage blocked"); },
+    setItem: () => { throw new Error("storage quota"); },
+  }, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+    assert.doesNotThrow(() => saveGame({ unlockedLevel: 1, completed: [0] }));
+  });
+  withStorage(undefined, () => {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+    assert.doesNotThrow(() => saveGame({ unlockedLevel: 1, completed: [0] }));
+  });
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    get: () => { throw new Error("access denied"); },
+  });
+  try {
+    assert.deepEqual(loadGame(17), { unlockedLevel: 0, completed: [] });
+    assert.doesNotThrow(() => saveGame({ unlockedLevel: 1, completed: [0] }));
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else delete globalThis.localStorage;
+  }
 });

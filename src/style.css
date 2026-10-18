@@ -32,8 +32,8 @@ p { line-height: 1.6; }
 .graph-canvas { display: block; font: 12px ui-monospace, monospace; overflow: visible; }
 .graph-title { fill: #a5bfa8; font-size: 11px; letter-spacing: .05em; }
 .edge { fill: none; stroke: #90bd9a; stroke-width: 3; stroke-dasharray: 1000; animation: draw-edge .5s ease-out; }
-.commit-node { transition: transform .45s ease; cursor: pointer; }
-@starting-style { .actual-graph .commit-node { transform: translate(20px, 25px); } }
+.commit-node { translate: 0 0; transition: transform .45s ease, translate .45s ease, opacity .45s ease; cursor: pointer; }
+@starting-style { .actual-graph .commit-node { translate: -60px 0; opacity: 0; } }
 .commit-node circle { fill: #2c5038; stroke: #ace5a5; stroke-width: 3; }
 .commit-node text { fill: #d9ead7; }
 .commit-node.head circle { fill: #aeea9b; stroke: #ecffe7; }

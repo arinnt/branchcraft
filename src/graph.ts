@@ -75,8 +75,11 @@ export function newGraph(): Graph {
     staged: false,
     working: {},
     index: {},
-    origin: { branches: {}, commits: [] },
-    tracking: {},
+    origin: {
+      branches: { main: "c0" },
+      commits: [{ id: "c0", parents: [], message: "Initial commit", tree: {} }],
+    },
+    tracking: { "origin/main": "c0" },
     tags: {},
     stash: [],
     conflict: null,
@@ -107,13 +110,16 @@ function equalTree(a: Tree, b: Tree): boolean {
 function resolve(g: Graph, ref = "HEAD"): string | undefined {
   const expression = /^(.*?)([~^])(\d*)$/.exec(ref);
   if (expression) {
-    let id = resolve(g, expression[1] || "HEAD");
+    let id: string | undefined = resolve(g, expression[1] || "HEAD");
     const count = expression[3] === "" ? 1 : Number(expression[3]);
     if (!Number.isSafeInteger(count)) return undefined;
     if (expression[2] === "^") {
       return count === 0 ? id : (id && find(g, id)?.parents[count - 1]) || undefined;
     }
-    for (let i = 0; i < count && id; i++) id = find(g, id)?.parents[0];
+    for (let i = 0; i < count && id; i++) {
+      const commit: Commit | undefined = find(g, id);
+      id = commit?.parents[0];
+    }
     return id;
   }
   const id = ref === "HEAD" ? headId(g)
@@ -385,6 +391,7 @@ export function operate(graph: Graph, action: Action, target?: string, name?: st
     const fresh = newGraph();
     fresh.working = { ...g.working };
     fresh.origin = g.origin;
+    fresh.tracking = { ...g.tracking };
     status(fresh);
     return { graph: fresh, command, output: "Initialized repository (empty root c0 represents an unborn branch).", ok: true };
   }
@@ -455,7 +462,7 @@ export function operate(graph: Graph, action: Action, target?: string, name?: st
       } else if (!g.staged) return fail("Nothing staged to commit.");
       const parents = g.conflict?.kind === "merge"
         ? [headId(g), g.conflict.target] : [headId(g)];
-      const commit = addCommit(g, g.index, name ?? "Commit", parents);
+      const commit: Commit = addCommit(g, g.index, name ?? "Commit", parents);
       g.conflict = null;
       status(g);
       return result(`Created commit ${commit.id}.`);
@@ -516,7 +523,8 @@ export function operate(graph: Graph, action: Action, target?: string, name?: st
       const chain: Commit[] = [];
       let cursor: string | undefined = current;
       while (cursor && !excluded.has(cursor)) {
-        const commit = find(g, cursor)!;
+        const commit: Commit | undefined = find(g, cursor);
+        if (!commit) return fail("Rebase history contains a missing commit; history was left unchanged.");
         if (commit.parents.length !== 1) return fail("Cannot rebase merge commits; history was left unchanged.");
         chain.unshift(commit);
         cursor = commit.parents[0];
@@ -535,7 +543,7 @@ export function operate(graph: Graph, action: Action, target?: string, name?: st
       const id = resolve(g, target ?? "HEAD");
       if (!id) return fail(`Unknown revision: ${target ?? "HEAD"}.`);
       if (!clean(g)) return fail("Commit or stash your changes before applying a patch.");
-      const commit = find(g, id)!;
+      const commit: Commit = find(g, id)!;
       if (commit.parents.length > 1) return fail("A merge commit requires a mainline parent; operation unchanged.");
       const parent = commit.parents[0] ? find(g, commit.parents[0])!.tree : {};
       const patch = action === "cherry-pick"
@@ -648,7 +656,7 @@ function mergeInto(
     status(g);
     return result(`Merge conflict in ${patch.conflicts.join(", ")}. Edit, stage, and commit the resolution.`, false);
   }
-  const commit = addCommit(g, patch.tree, "Merge", [current, target]);
+  const commit: Commit = addCommit(g, patch.tree, "Merge", [current, target]);
   setTree(g, patch.tree);
   return result(`Merged as ${commit.id}.`);
 }
@@ -660,7 +668,7 @@ function fetchOrigin(g: Graph): string | undefined {
   const visited = new Set<string>();
   const validate = (id: string): boolean => {
     if (visited.has(id)) return true;
-    const commit = remote.get(id);
+    const commit: Commit | undefined = remote.get(id);
     if (!commit || visiting.has(id)) return false;
     visiting.add(id);
     if (!commit.parents.every(validate)) return false;
@@ -670,7 +678,7 @@ function fetchOrigin(g: Graph): string | undefined {
   };
   if (!Object.values(g.origin.branches).every(validate)) return "Origin has missing objects or cyclic history.";
   for (const id of visited) {
-    const commit = remote.get(id)!;
+    const commit: Commit = remote.get(id)!;
     const local = find(g, id);
     if (local && (local.message !== commit.message
       || JSON.stringify(local.parents) !== JSON.stringify(commit.parents)

@@ -28,6 +28,8 @@ export function emptyGraph(): Graph {
     commits: [],
     branches: {},
     head: { branch: "main" },
+    origin: { branches: {}, commits: [] },
+    tracking: {},
   };
 }
 

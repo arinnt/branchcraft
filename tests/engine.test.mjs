@@ -657,6 +657,74 @@ test("stash applies safely across commits using its stored base and keeps confli
   assert.equal(graph.stash.length, 1);
 });
 
+test("identical staged stash snapshots retain distinct bases and pop in LIFO order", () => {
+  let graph = save(newGraph(), "file", "A");
+  const firstBase = headId(graph);
+  graph = run(run(run(graph, "edit", "file", "C"), "stage"), "stash");
+  graph = save(graph, "file", "B");
+  const secondBase = headId(graph);
+  graph = run(run(run(graph, "edit", "file", "C"), "stage"), "stash");
+  assert.equal(graph.stash.length, 2);
+  assert.equal(graph.stash[0].base, firstBase);
+  assert.equal(graph.stash[1].base, secondBase);
+  assert.deepEqual(graph.stash[0].working, graph.stash[1].working);
+  assert.deepEqual(graph.stash[0].index, graph.stash[1].index);
+  graph = cloneGraph(graph);
+  assert.equal(graph.stash[0].base, firstBase);
+  assert.equal(graph.stash[1].base, secondBase);
+
+  graph = run(graph, "pop");
+  assert.deepEqual(graph.working, { file: "C" });
+  assert.deepEqual(graph.index, { file: "C" });
+  assert.equal(graph.dirty, false);
+  assert.equal(graph.staged, true);
+  assert.equal(graph.stash.length, 1);
+  assert.equal(graph.stash[0].base, firstBase);
+
+  graph = run(graph, "reset", secondBase);
+  graph = run(graph, "edit", "file", "B");
+  assert.equal(graph.dirty, false);
+  reject(graph, "pop", undefined, undefined, /conflicts.*stash was kept/);
+  assert.equal(graph.stash.length, 1);
+
+  graph = run(graph, "checkout", firstBase);
+  graph = run(graph, "pop");
+  assert.deepEqual(graph.working, { file: "C" });
+  assert.deepEqual(graph.index, { file: "C" });
+  assert.equal(graph.staged, true);
+  assert.equal(graph.stash.length, 0);
+});
+
+test("stash honors an explicit base and safely rejects a missing base object", () => {
+  let graph = save(newGraph(), "file", "base");
+  const base = headId(graph);
+  graph = run(run(run(graph, "edit", "file", "staged"), "stage"), "stash");
+  assert.equal(graph.stash[0].base, base);
+  // Explicit identity must suffice even without the old content-matching objects.
+  graph.commits = graph.commits.filter((commit) => !commit.message.startsWith("Stash "));
+  graph = run(graph, "pop");
+  assert.deepEqual(graph.index, { file: "staged" });
+  graph = run(graph, "stash");
+  graph.stash[0].base = "missing";
+  reject(graph, "pop", undefined, undefined, /base objects are missing/);
+});
+
+test("legacy stash snapshots without a base remain backward compatible", () => {
+  let graph = save(newGraph(), "file", "base");
+  graph = run(run(run(graph, "edit", "file", "staged"), "stage"), "stash");
+  delete graph.stash[0].base;
+  graph = run(graph, "pop");
+  assert.deepEqual(graph.index, { file: "staged" });
+
+  graph = save(newGraph(), "file", "base");
+  graph.stash.push({
+    working: { file: "unstaged" }, index: { file: "base" }, dirty: true, staged: false,
+  });
+  graph = run(graph, "pop");
+  assert.deepEqual(graph.working, { file: "unstaged" });
+  assert.deepEqual(graph.index, { file: "base" });
+});
+
 test("ignored files survive stashing and conflicting merge transitions without being stashed", () => {
   let graph = run(newGraph(), "ignore", "*.log");
   graph = run(run(graph, "stage"), "commit");

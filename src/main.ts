@@ -1,6 +1,7 @@
 import { GraphCanvas } from "./engine";
-import { headId, matchesGoal, newGraph, operate, type Action, type Graph } from "./graph";
+import { headId, newGraph, operate, type Action, type Graph } from "./graph";
 import { levels } from "./levels";
+import { isLevelComplete } from "./levels/types";
 import { loadGame, saveGame } from "./save";
 import "./style.css";
 
@@ -106,7 +107,7 @@ function update(): void {
     (app.querySelector("#undo") as HTMLButtonElement).disabled = !undo.length;
     (app.querySelector("#redo") as HTMLButtonElement).disabled = !redo.length;
   } else {
-    completedGraph = matchesGoal(lessonGraph, levels[current]!.goal);
+    completedGraph = isLevelComplete(lessonGraph, levels[current]!);
     if (!completedGraph) { quizIndex = null; quizFeedback = ""; }
     renderCompletion();
   }

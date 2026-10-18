@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { headId, matchesGoal, operate } from "../src/graph.ts";
 import { levels } from "../src/levels/index.ts";
 import { follow } from "../src/levels/scenarios.ts";
+import { isLevelComplete } from "../src/levels/types.ts";
 
 const courseOrder = [
   "repository", "clone", "commit", "branch", "checkout", "merge",
@@ -21,6 +22,29 @@ test("lesson replay accepts a conflict transition but rejects unrelated failures
   const conflicted = operate(start, "merge", "feature").graph;
   assert.equal(conflicted.conflict.kind, "merge");
   assert.throws(() => follow(conflicted, [{ action: "checkout", target: "missing-branch" }]));
+});
+
+test("gitignore completion requires the committed rule and excludes generated output", () => {
+  const level = levels.find((entry) => entry.id === "gitignore");
+  const bypass = follow(level.start, [
+    { action: "stage" },
+    { action: "commit", name: "Ignore generated build output" },
+  ]);
+  assert.equal(matchesGoal(bypass, level.goal), true, "Topology deliberately ignores file contents");
+  assert.equal(isLevelComplete(bypass, level), false, "Staging generated files is not the lesson goal");
+
+  const solved = follow(level.start, level.solution);
+  assert.equal(isLevelComplete(solved, level), true);
+
+  const missingRule = structuredClone(solved);
+  missingRule.commits.find((commit) => commit.id === headId(missingRule)).tree[".gitignore"] = "# build/\n";
+  assert.equal(matchesGoal(missingRule, level.goal), true);
+  assert.equal(isLevelComplete(missingRule, level), false, "A comment is not an ignore rule");
+
+  const trackedOutput = structuredClone(solved);
+  trackedOutput.commits.find((commit) => commit.id === headId(trackedOutput)).tree["build/leak.js"] = "Generated";
+  assert.equal(matchesGoal(trackedOutput, level.goal), true);
+  assert.equal(isLevelComplete(trackedOutput, level), false, "The ignore rule cannot excuse tracked output");
 });
 
 test("lesson snapshots encode the operations described in their instructions", () => {
@@ -68,6 +92,7 @@ for (const level of levels) {
     const original = structuredClone(level.start);
     let graph = level.start;
     assert.equal(matchesGoal(graph, level.goal), false, "The initial graph must require work");
+    assert.equal(isLevelComplete(graph, level), false);
     assert.ok(level.solution.length > 0, "A lesson needs an executable solution");
 
     for (const step of level.solution) {
@@ -80,6 +105,7 @@ for (const level of levels) {
     }
 
     assert.equal(matchesGoal(graph, level.goal), true, "The solution must match its goal");
+    assert.equal(isLevelComplete(graph, level), true, "The solution must satisfy lesson-specific requirements");
     assert.deepEqual(level.start, original, "Solving a lesson must preserve its restart state");
   });
 

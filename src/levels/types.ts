@@ -1,3 +1,4 @@
+import { matchesGoal } from "../graph.ts";
 import type { Action, Graph } from "../graph.ts";
 
 export interface QuizQuestion {
@@ -22,6 +23,11 @@ export interface LevelDefinition {
   hint: string;
   start: Graph;
   goal: Graph;
+  validateGoal?: (graph: Graph) => boolean;
   solution: SolutionStep[];
   quiz: [QuizQuestion, QuizQuestion, QuizQuestion];
+}
+
+export function isLevelComplete(graph: Graph, level: LevelDefinition): boolean {
+  return matchesGoal(graph, level.goal) && (level.validateGoal?.(graph) ?? true);
 }

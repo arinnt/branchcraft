@@ -22,6 +22,7 @@ export interface Graph {
     index: Record<string, string>;
     dirty: boolean;
     staged: boolean;
+    base?: string;
   }>;
   conflict: null | {
     kind: "merge" | "rebase" | "cherry-pick" | "revert";
@@ -175,8 +176,8 @@ function addCommit(g: Graph, tree: Tree, message: string, parents = [headId(g)])
 }
 
 function stashBase(g: Graph, entry: Graph["stash"][number]): Tree | undefined {
-  // Like Git, stash keeps its base and index in otherwise unreachable commits.
-  // This stores all state in the public Graph without hidden mutable metadata.
+  if (entry.base !== undefined) return find(g, entry.base)?.tree;
+  // Backward compatibility for snapshots created before explicit base IDs.
   let matched: Tree | undefined;
   for (let i = g.commits.length - 1; i >= 0; i--) {
     const snapshot = g.commits[i];
@@ -599,8 +600,8 @@ export function operate(graph: Graph, action: Action, target?: string, name?: st
     case "stash": {
       if (clean(g)) return fail("No local changes to stash.");
       const working = Object.fromEntries(Object.entries(g.working).filter(([path]) => !ignored(g, path)));
-      const entry = { working, index: { ...g.index }, dirty: g.dirty, staged: g.staged };
       const base = headId(g);
+      const entry = { working, index: { ...g.index }, dirty: g.dirty, staged: g.staged, base };
       const index: Commit = { id: nextId(g), parents: [base], message: "Stash index", tree: { ...g.index } };
       g.commits.push(index);
       g.commits.push({

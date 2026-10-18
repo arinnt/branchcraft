@@ -1,4 +1,4 @@
-import { newGraph } from "../graph.ts";
+import { headId, newGraph } from "../graph.ts";
 import { follow } from "./scenarios.ts";
 import type { LevelDefinition, SolutionStep } from "./types.ts";
 
@@ -20,6 +20,12 @@ const level: LevelDefinition = {
   hint: "Choose Ignore with build/ as the pattern, then Stage and Commit. Keep build/output.js out of the committed snapshot.",
   start,
   goal: follow(start, solution),
+  validateGoal: (graph) => {
+    const tree = graph.commits.find((commit) => commit.id === headId(graph))?.tree;
+    return !!tree
+      && (tree[".gitignore"] ?? "").split(/\r?\n/).some((rule) => rule.trim() === "build/")
+      && !Object.keys(tree).some((path) => path.startsWith("build/"));
+  },
   solution,
   quiz: [
     { prompt: "Which file belongs in the commit you just created?", options: ["build/output.js only", "Every generated file", ".gitignore, but not build/output.js"], answer: 2, explanation: "The ignore rule is versioned configuration, while the untracked generated output is excluded from staging." },

@@ -19,7 +19,7 @@ Run `npm test` for operation, goal-matching, persistence, and lesson-solution te
 - Stash/pop preserves unfinished work. Tag marks a commit; Ignore file updates `.gitignore`. Conflicts require editing the affected file, staging, and committing.
 - Every attempt appears in the live terminal, including rejected operations. Unsafe checkouts, conflicting changes, and non-fast-forward pushes are rejected rather than silently succeeding.
 
-Each of the 17 challenges supplies a starting repository, a goal, task text, a hint, and a reset button. Completion checks reachable graph topology, named branches, HEAD (including detached HEAD), remote and tracking refs, tags, and working-state conditions—not a click counter. Commit IDs and messages need not match the goal. Old unreachable objects left by reset or rebase do not prevent completion. Three questions about the graph you built unlock the next challenge.
+Each of the 17 challenges supplies a starting repository, a goal, task text, a hint, and a reset button. Completion checks reachable graph topology, named branches, HEAD (including detached HEAD), remote and tracking refs, tags, and working-state conditions—not a click counter. Commit IDs and messages need not match the goal. The ignore challenge additionally checks that the ignore rule is committed and generated files are not tracked. Old unreachable objects left by reset or rebase do not prevent completion. Three questions about the graph you built unlock the next challenge.
 
 The glossary contains unlocked Git terms and command reminders. Course progress uses `branchcraft-save-v2` in localStorage. Old liquid-workshop progress is intentionally reset because its completion criteria no longer apply; unavailable or malformed storage never prevents play.
 

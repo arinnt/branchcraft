@@ -1,361 +1,232 @@
-import { CanvasStage, drawCommitGraph, loadGame, newGraph, recordAction, saveGame, type SavedGame } from "./engine";
+import { GraphCanvas } from "./engine";
+import { headId, matchesGoal, newGraph, operate, type Action, type Graph } from "./graph";
 import { levels } from "./levels";
-import commitLevel from "./levels/commit";
+import { loadGame, saveGame } from "./save";
 import "./style.css";
 
-type Screen = "lesson" | "recap" | "quiz" | "passed" | "glossary" | "sandbox";
-
-const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) throw new Error("App root is missing.");
-
-const saved = loadGame(levels.length);
-let progress: SavedGame = saved;
+const app = document.querySelector<HTMLDivElement>("#app")!;
+const progress = loadGame(levels.length);
+type Screen = "lesson" | "sandbox" | "glossary";
+type Entry = { command: string; output: string; ok: boolean };
+type Snapshot = { graph: Graph; history: Entry[] };
 let screen: Screen = "lesson";
-let currentIndex = Math.min(saved.unlockedLevel, levels.length - 1);
-let actionCount = 0;
-let quizIndex = 0;
-let feedback = "";
-let stage: CanvasStage | undefined;
-let graphResizeObserver: ResizeObserver | undefined;
-let sandboxJars = 1;
-let sandboxPipes = 1;
+let current = Math.min(progress.unlockedLevel, levels.length - 1);
+let lessonGraph = structuredClone(levels[current]!.start);
+let sandboxGraph = newGraph();
+let selected = headId(lessonGraph);
+let history: Entry[] = [];
+let sandboxHistory: Entry[] = [];
+let undo: Snapshot[] = [];
+let redo: Snapshot[] = [];
+let canvas: GraphCanvas | undefined;
+let quizIndex: number | null = null;
+let quizFeedback = "";
+let completedGraph = false;
 
-const esc = (value: string): string =>
-  value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character] ?? character);
+const esc = (value: string): string => value.replace(/[&<>"']/g, character =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+const graph = (): Graph => screen === "sandbox" ? sandboxGraph : lessonGraph;
+const log = (): Entry[] => screen === "sandbox" ? sandboxHistory : history;
+const actions: [Action, string, string][] = [
+  ["init", "Init", "Create a repository"], ["edit", "Edit file", "Edit the working tree (E)"],
+  ["stage", "Stage", "Stage the working tree (S)"], ["commit", "Commit", "Commit the index (C)"],
+  ["branch", "New branch", "Create a branch at selection (B)"], ["checkout", "Checkout", "Checkout selection (Enter)"],
+  ["merge", "Merge selected into HEAD", "Merge selection (M)"], ["rebase", "Rebase HEAD onto selected", "Replay HEAD's commits on selection"],
+  ["reset", "Reset to selected", "Mixed reset: move HEAD, unstage, keep working files"],
+  ["revert", "Revert selected", "Create an inverse commit"], ["cherry-pick", "Cherry-pick selected", "Apply the selected commit"],
+  ["fetch", "Fetch", "Update origin tracking refs"], ["pull", "Pull", "Fetch and merge origin's current branch"],
+  ["push", "Push", "Push HEAD's branch to origin"], ["clone", "Clone", "Clone origin into an empty repository"],
+  ["stash", "Stash", "Save uncommitted changes"], ["pop", "Pop", "Restore the latest stash"],
+  ["tag", "Tag", "Name the selected commit"], ["ignore", "Ignore file", "Add the file path to .gitignore"],
+];
 
-function persist(): void {
-  saveGame(progress);
-}
-
-function unlockedLevelCount(): number {
-  return Math.max(0, Math.min(progress.unlockedLevel + 1, levels.length));
-}
-
-function navigation(): string {
-  const unlocked = unlockedLevelCount();
-  return `
-    <header class="topbar">
-      <button class="brand" data-screen="lesson" aria-label="Branchcraft home">
-        <span class="brand-mark" aria-hidden="true">⑂</span><span>branchcraft</span>
-      </button>
-      <span class="topbar-caption">A hands-on Git field guide</span>
-      <nav class="topnav" aria-label="Main navigation">
-        <button class="${screen === "lesson" || screen === "recap" || screen === "quiz" || screen === "passed" ? "active" : ""}" data-screen="lesson">Learn</button>
-        <button class="${screen === "glossary" ? "active" : ""}" data-screen="glossary">Glossary <span class="nav-count">${unlocked}</span></button>
-        <button class="${screen === "sandbox" ? "active" : ""}" data-screen="sandbox">Sandbox</button>
-      </nav>
-    </header>`;
-}
-
-function sidebar(): string {
-  const unlocked = unlockedLevelCount();
-  return `
-    <aside class="lesson-rail" aria-label="Course levels">
-      <div class="rail-heading"><span>FIELD NOTES</span><span>${String(unlocked).padStart(2, "0")} / ${levels.length}</span></div>
-      <ol class="level-list">
-        ${levels.map((level, index) => {
-          const isLocked = index >= unlocked;
-          const isDone = progress.completed.includes(index);
-          const selected = index === currentIndex && screen !== "glossary" && screen !== "sandbox";
-          return `<li><button class="level-link ${selected ? "selected" : ""} ${isLocked ? "locked" : ""} ${isDone ? "completed" : ""}" ${isLocked ? "disabled" : `data-level="${index}"`}>
-            <span class="level-number">${isDone ? "✓" : String(index + 1).padStart(2, "0")}</span><span>${esc(level.term)}</span>${isLocked ? '<span class="lock" aria-label="locked">⌑</span>' : ""}
-          </button></li>`;
-        }).join("")}
-      </ol>
-      <button class="reset-link" data-reset>Reset workshop</button>
-    </aside>`;
-}
-
-function graphPanel(): string {
-  return `
-    <aside class="graph-panel">
-      <div class="panel-title"><div><span class="eyebrow">LIVE WORKSHOP</span><h2>Commit graph</h2></div><span class="live-dot" aria-label="Live"></span></div>
-      <canvas class="graph-canvas" aria-label="Live diagram of branches, commits, and remote"></canvas>
-      <div class="graph-key"><span><i class="key-local"></i> local</span><span><i class="key-remote"></i> origin</span><span><i class="key-branch"></i> branch</span></div>
-      <p class="graph-caption">Every saved batch leaves a mark in the history.</p>
-    </aside>`;
-}
-
-function lessonContent(): string {
-  const level = levels[currentIndex]!;
-  const step = Math.min(actionCount, 3);
-  return `
-    <section class="lesson-content">
-      <div class="level-kicker"><span>MODULE ${String(currentIndex + 1).padStart(2, "0")}</span><span class="kicker-line"></span><span>GIT FOUNDATIONS</span></div>
-      <div class="lesson-heading"><div><h1>${esc(level.term)}</h1><p>${esc(level.metaphor)}</p></div><span class="term-stamp">${String(currentIndex + 1).padStart(2, "0")}</span></div>
-      <div class="game-layout">
-        <div class="play-column">
-          <div class="stage-frame">
-            <div class="stage-topline"><span>THE WORKBENCH</span><span class="stage-hint"><span class="hint-dot"></span> PROCEDURAL STUDIO</span></div>
-            <canvas class="game-canvas" tabindex="0" role="button" aria-label="Interactive ${esc(level.term)} workshop. Tap or press enter to perform the action."></canvas>
-            <div class="stage-instruction"><span class="instruction-icon">↳</span><span>${esc(level.instruction)}</span></div>
-          </div>
-          <div class="action-row">
-            <div class="action-count"><span class="eyebrow">YOUR MOVE</span><strong data-step-label>${step} / 3 batches</strong></div>
-            <button class="primary-button" data-action="perform" ${step >= 3 ? "disabled" : ""}>${esc(level.action)} <span aria-hidden="true">↗</span></button>
-          </div>
-          <div class="progress-track" aria-label="Level action progress">${[0, 1, 2].map((index) => `<span class="${index < step ? "filled" : ""}" style="--level-color:${level.color}"></span>`).join("")}</div>
-        </div>
-        ${graphPanel()}
-      </div>
-      <div class="lesson-footnote"><span>✳</span> No commands to memorize. Learn by doing, then name the move.</div>
-    </section>`;
-}
-
-function recapContent(): string {
-  const level = levels[currentIndex]!;
-  return `
-    <section class="transition-layout">
-      <div class="transition-main">
-        <div class="level-kicker"><span>MODULE COMPLETE</span><span class="kicker-line"></span><span>THE IDEA</span></div>
-        <div class="recap-card">
-          <span class="eyebrow">YOU JUST PRACTICED</span>
-          <h1>${esc(level.term)}</h1>
-          <p class="definition">${esc(level.definition)}</p>
-          <div class="command-box"><span class="eyebrow">IN A REAL REPOSITORY</span><code>${esc(level.command)}</code></div>
-          <div class="recap-metaphor"><span>✳</span><span>${esc(level.metaphor)}</span></div>
-        </div>
-        <div class="transition-bottom"><p>Ready to pin this term in your field notes?</p><button class="primary-button" data-action="start-quiz">Take the 3-question check <span>↗</span></button></div>
-      </div>
-      ${graphPanel()}
-    </section>`;
-}
-
-function quizContent(): string {
-  const level = levels[currentIndex]!;
-  const question = level.quiz[quizIndex]!;
-  return `
-    <section class="transition-layout">
-      <div class="transition-main">
-        <div class="level-kicker"><span>FIELD CHECK</span><span class="kicker-line"></span><span>${esc(level.term.toUpperCase())}</span></div>
-        <div class="quiz-card">
-          <div class="quiz-progress">${[0, 1, 2].map((index) => `<span class="${index < quizIndex ? "answered" : ""} ${index === quizIndex ? "current" : ""}"></span>`).join("")}<span class="quiz-index">QUESTION ${quizIndex + 1} / 3</span></div>
-          <h1>${esc(question.prompt)}</h1>
-          <div class="answer-list">${question.options.map((option, index) => `<button class="answer-option" data-answer="${index}"><span class="answer-letter">${String.fromCharCode(65 + index)}</span><span>${esc(option)}</span><span class="answer-arrow">↗</span></button>`).join("")}</div>
-          ${feedback ? `<p class="quiz-feedback ${feedback.startsWith("Not quite") ? "incorrect" : "correct"}">${esc(feedback)}</p>` : ""}
-          <p class="quiz-note">Answer correctly to add the next term to your workshop.</p>
-        </div>
-      </div>
-      ${graphPanel()}
-    </section>`;
-}
-
-function passedContent(): string {
-  const level = levels[currentIndex]!;
-  const next = levels[currentIndex + 1];
-  return `
-    <section class="transition-layout">
-      <div class="transition-main">
-        <div class="level-kicker"><span>FIELD NOTES UPDATED</span><span class="kicker-line"></span><span>TERM UNLOCKED</span></div>
-        <div class="passed-card"><div class="passed-icon">✓</div><span class="eyebrow">WELL SEALED</span><h1>${esc(level.term)}</h1><p>${esc(level.definition)}</p><div class="command-box"><span class="eyebrow">KEEP THIS COMMAND</span><code>${esc(level.command)}</code></div></div>
-        <div class="transition-bottom"><p>${next ? `Up next: <strong>${esc(next.term)}</strong>` : "You have finished all 17 field notes."}</p><button class="primary-button" data-action="next">${next ? "Next field note" : "Explore the glossary"} <span>↗</span></button></div>
-      </div>
-      ${graphPanel()}
-    </section>`;
-}
-
-function glossaryContent(): string {
-  const learned = levels.slice(0, unlockedLevelCount());
-  return `
-    <section class="wide-content">
-      <div class="level-kicker"><span>FIELD NOTES</span><span class="kicker-line"></span><span>${learned.length} OF ${levels.length} UNLOCKED</span></div>
-      <div class="wide-heading"><div><h1>Glossary</h1><p>Every term is a jar you have opened. Return when you need a quick reminder.</p></div><span class="term-stamp">${String(learned.length).padStart(2, "0")}</span></div>
-      <div class="glossary-grid">${learned.map((level, index) => `<article class="glossary-card" style="--term-color:${level.color}">
-        <div class="glossary-card-head"><span class="glossary-index">${String(index + 1).padStart(2, "0")}</span><span class="eyebrow">TERM ${String(index + 1).padStart(2, "0")}</span></div>
-        <h2>${esc(level.term)}</h2><p>${esc(level.definition)}</p>
-        <div class="glossary-metaphor"><span>✳</span>${esc(level.metaphor)}</div>
-        <code>${esc(level.command)}</code>
-      </article>`).join("")}</div>
-      ${graphPanel()}
-    </section>`;
-}
-
-function sandboxContent(): string {
-  return `
-    <section class="lesson-content sandbox-page">
-      <div class="level-kicker"><span>OPEN WORKSHOP</span><span class="kicker-line"></span><span>NO RULES, JUST FLOWS</span></div>
-      <div class="lesson-heading"><div><h1>Sandbox</h1><p>Build your own little Git kitchen. Add jars, route a pipe, and pour to mix.</p></div><span class="term-stamp">∞</span></div>
-      <div class="game-layout">
-        <div class="play-column">
-          <div class="stage-frame">
-            <div class="stage-topline"><span>FREE-FORM PLAYGROUND</span><span class="stage-hint"><span class="hint-dot"></span> LIQUID LAB</span></div>
-            <canvas class="game-canvas sandbox-canvas" tabindex="0" role="button" aria-label="Sandbox playground. Tap to pour and mix colored liquids."></canvas>
-            <div class="stage-instruction"><span class="instruction-icon">↳</span><span>Tap anywhere in the workshop to pour and blend the liquid.</span></div>
-          </div>
-          <div class="sandbox-actions">
-            <button class="utility-button" data-sandbox="jar">＋ Add jar</button><button class="utility-button" data-sandbox="pipe">⌁ Add pipe</button><button class="primary-button" data-sandbox="commit">Seal a commit <span>↗</span></button>
-          </div>
-          <p class="sandbox-hint">${sandboxJars} jars · ${sandboxPipes} pipes · no saves are required</p>
-        </div>
-        ${graphPanel()}
-      </div>
-    </section>`;
+function toolbar(): string {
+  return `<section class="controls" aria-label="Git actions">
+    <div class="inputs">
+      <label>Branch / tag / commit message<input id="name" autocomplete="off" placeholder="feature"></label>
+      <label>File path<input id="path" value="file.txt" autocomplete="off"></label>
+      <label>File contents<input id="contents" placeholder="Your change" autocomplete="off"></label>
+    </div>
+    <p id="selection">Selected: <strong>${esc(selected || "none")}</strong> · actions target this commit; HEAD is ${esc(headId(graph()) || "unborn")}.</p>
+    <div class="toolbar">${actions.map(([action, label, title]) => `<button data-action="${action}" title="${title}">${label}</button>`).join("")}</div>
+  </section>`;
 }
 
 function render(): void {
-  stage?.dispose();
-  stage = undefined;
-  graphResizeObserver?.disconnect();
-  graphResizeObserver = undefined;
-  const noRail = screen === "glossary" || screen === "sandbox";
-  const content = screen === "lesson" ? lessonContent()
-    : screen === "recap" ? recapContent()
-      : screen === "quiz" ? quizContent()
-        : screen === "passed" ? passedContent()
-          : screen === "glossary" ? glossaryContent()
-            : sandboxContent();
-  app!.innerHTML = `${navigation()}<div class="app-shell ${noRail ? "no-rail" : ""}">${noRail ? "" : sidebar()}<main class="main-area">${content}</main></div><footer class="site-footer"><span>BRANCHCRAFT <span class="footer-sep">/</span> A LITTLE GIT, HANDS-ON</span><span>MADE OF PIXELS, PARTICLES &amp; PROCEDURAL SOUNDS</span></footer>`;
-
-  const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
-  if (graphCanvas) {
-    drawCommitGraph(graphCanvas, progress.graph);
-    graphResizeObserver = new ResizeObserver(() => drawCommitGraph(graphCanvas, progress.graph));
-    graphResizeObserver.observe(graphCanvas);
-  }
-
-  const gameCanvas = app!.querySelector<HTMLCanvasElement>(".game-canvas");
-  if (gameCanvas) {
-    stage = new CanvasStage(
-      gameCanvas,
-      screen === "lesson" ? levels[currentIndex]! : null,
-      actionCount,
-      () => performAction(),
-      screen === "sandbox" ? { jars: sandboxJars, pipes: sandboxPipes } : undefined,
-    );
+  canvas?.dispose();
+  canvas = undefined;
+  const level = levels[current]!;
+  app.innerHTML = `<header><a class="brand" href="#" data-screen="lesson">⑂ branchcraft</a><span>Git is a graph. Make your move.</span>
+    <nav aria-label="Main navigation">${(["lesson", "sandbox", "glossary"] as Screen[]).map(item =>
+      `<button data-screen="${item}" aria-current="${screen === item ? "page" : "false"}">${item === "lesson" ? "Learn" : item === "sandbox" ? "Sandbox" : "Glossary"}</button>`).join("")}</nav></header>
+    <div class="shell"><aside aria-label="Course levels"><h2>17 graph challenges</h2><ol>${levels.map((item, index) =>
+      `<li><button data-level="${index}" ${index > progress.unlockedLevel ? "disabled" : ""} class="${current === index && screen === "lesson" ? "active" : ""}"><span>${progress.completed.includes(index) ? "✓" : String(index + 1).padStart(2, "0")}</span> ${esc(item.term)}</button></li>`).join("")}</ol>
+      <button id="reset-progress">Reset progress</button></aside><main>
+    ${screen === "glossary" ? `<h1>Glossary</h1><p>Terms you have unlocked, grounded in commit history.</p><div class="glossary">${levels.slice(0, progress.unlockedLevel + 1).map(item =>
+      `<article><h2>${esc(item.term)}</h2><p>${esc(item.definition)}</p><code>${esc(item.command)}</code></article>`).join("")}</div>` :
+    `<div class="heading"><div><p class="eyebrow">${screen === "sandbox" ? "FREE GRAPH · ALL ACTIONS UNLOCKED" : `CHALLENGE ${current + 1} / 17`}</p><h1>${screen === "sandbox" ? "Sandbox" : esc(level.term)}</h1><p>${screen === "sandbox" ? "Experiment with history. Every action uses the same Git rules as the lessons." : esc(level.instruction)}</p></div>
+      <div class="level-tools">${screen === "lesson" ? '<button id="reset-level">Reset level</button><button id="hint">Hint</button>' : '<button id="undo">Undo</button><button id="redo">Redo</button><button id="export">Export history</button><button id="clear-sandbox">New graph</button>'}</div></div>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <div class="status" id="status"></div>
+    <div id="graph-host" class="graph-host"></div>
+    <p class="graph-help">Click a commit to select · click a branch to checkout · arrows navigate commits · Enter checks out · dashed outline = goal</p>
+    <details class="file-inspector"><summary>Inspect working files and index</summary><div id="files"></div></details>
+    ${toolbar()}
+    <section class="terminal" aria-label="Live Git terminal" tabindex="0"><h2>Command history</h2><div id="terminal" role="log" aria-live="polite"></div></section>
+    <section id="completion" aria-live="polite"></section>`}
+    </main></div><footer>Branchcraft · a local Git simulator · no commands run on your computer</footer>`;
+  if (screen !== "glossary") {
+    canvas = new GraphCanvas(app.querySelector<HTMLElement>("#graph-host")!, graph(), screen === "lesson" ? level.goal : undefined,
+      id => { selected = id; update(); },
+      ref => act("checkout", ref));
+    update();
   }
 }
 
-function performAction(): void {
-  if (screen !== "lesson" || actionCount >= 3) return;
-  actionCount += 1;
-  recordAction(progress.graph, levels[currentIndex]!, false, actionCount);
-  persist();
-  stage?.setProgress(actionCount);
-  const stepLabel = app!.querySelector<HTMLElement>("[data-step-label]");
-  if (stepLabel) stepLabel.textContent = `${actionCount} / 3 batches`;
-  app!.querySelectorAll<HTMLElement>(".progress-track span").forEach((element, index) => {
-    if (index < actionCount) element.classList.add("filled");
+function update(): void {
+  if (screen === "glossary") return;
+  const state = graph();
+  canvas?.update(state, selected);
+  app.querySelector("#selection")!.innerHTML = `Selected: <strong>${esc(selected || "none")}</strong> · HEAD: ${esc("branch" in state.head ? state.head.branch : "detached")} @ ${esc(headId(state) || "unborn")}`;
+  app.querySelector("#status")!.textContent = `${state.initialized ? "Repository ready" : "No local repository"} · Working tree: ${state.dirty ? "modified" : "clean"} · Index: ${state.staged ? "staged" : "empty"} · Stashes: ${state.stash.length}${state.conflict ? ` · CONFLICT: ${state.conflict.kind} — edit file, stage, then commit` : ""}`;
+  app.querySelector("#files")!.innerHTML = `<div><h3>Working tree</h3>${Object.entries(state.working).map(([path, content]) =>
+    `<h4>${esc(path)}</h4><pre>${esc(content)}</pre>`).join("") || "<p>No files</p>"}</div><div><h3>Index snapshot</h3>${Object.entries(state.index).map(([path, content]) =>
+    `<h4>${esc(path)}</h4><pre>${esc(content)}</pre>`).join("") || "<p>No files</p>"}</div>`;
+  app.querySelectorAll<HTMLButtonElement>("[data-action]").forEach(button => {
+    const action = button.dataset.action!;
+    const targetsSelection = ["branch", "checkout", "merge", "rebase", "reset", "revert", "cherry-pick", "tag"].includes(action);
+    button.setAttribute("aria-description", targetsSelection ? `Target: ${selected || "no commit selected"}. HEAD: ${headId(state) || "unborn"}.` : `Working on ${"branch" in state.head ? state.head.branch : "detached HEAD"}.`);
+    button.classList.toggle("suggested", state.conflict ? ["edit", "stage", "commit"].includes(action) :
+      state.staged ? action === "commit" : state.dirty ? action === "stage" : targetsSelection && !!selected);
   });
-  const button = app!.querySelector<HTMLButtonElement>('[data-action="perform"]');
-  if (button) {
-    if (actionCount === 3) button.disabled = true;
-    else button.innerHTML = `${esc(levels[currentIndex]!.action)} <span aria-hidden="true">↗</span>`;
+  const terminal = app.querySelector("#terminal")!;
+  terminal.innerHTML = log().length ? log().map(entry => `<div class="${entry.ok ? "" : "error"}"><code>$ ${esc(entry.command)}</code><pre>${esc(entry.output)}</pre></div>`).join("") : '<p>Choose an action to see its equivalent Git command.</p>';
+  terminal.scrollTop = terminal.scrollHeight;
+  if (screen === "sandbox") {
+    (app.querySelector("#undo") as HTMLButtonElement).disabled = !undo.length;
+    (app.querySelector("#redo") as HTMLButtonElement).disabled = !redo.length;
+  } else {
+    completedGraph = matchesGoal(lessonGraph, levels[current]!.goal);
+    if (!completedGraph) { quizIndex = null; quizFeedback = ""; }
+    renderCompletion();
   }
-  const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
-  if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
-  if (actionCount === 3) screen = "recap";
-  if (screen === "recap") render();
 }
 
-function chooseAnswer(index: number): void {
-  if (screen !== "quiz") return;
-  const question = levels[currentIndex]!.quiz[quizIndex]!;
-  if (index !== question.answer) {
-    feedback = `Not quite. ${question.explanation}`;
-    render();
+function renderCompletion(): void {
+  const container = app.querySelector("#completion")!;
+  if (!completedGraph) { container.innerHTML = ""; return; }
+  if (quizIndex === null) {
+    container.innerHTML = '<div class="success"><h2>Graph matched!</h2><p>Your topology, branches, HEAD, and remote refs match the goal.</p><button id="start-quiz">Check your graph: 3 questions</button></div>';
     return;
   }
-  feedback = "";
-  quizIndex += 1;
-  if (quizIndex === 3) {
-    progress.completed = [...new Set([...progress.completed, currentIndex])];
-    progress.unlockedLevel = Math.max(progress.unlockedLevel, Math.min(currentIndex + 1, levels.length - 1));
-    persist();
-    screen = "passed";
+  if (quizIndex >= 3) {
+    container.innerHTML = `<div class="success"><h2>Challenge complete</h2><p>${esc(levels[current]!.definition)}</p><button id="next">${current + 1 < levels.length ? "Next challenge" : "Open glossary"}</button></div>`;
+    return;
   }
-  render();
+  const question = levels[current]!.quiz[quizIndex]!;
+  container.innerHTML = `<div class="quiz"><p class="eyebrow">YOUR GRAPH · QUESTION ${quizIndex + 1} / 3</p><h2>${esc(question.prompt)}</h2><div class="answers">${question.options.map((option, index) => `<button data-answer="${index}">${esc(option)}</button>`).join("")}</div><p role="status">${esc(quizFeedback)}</p>${quizFeedback.startsWith("Correct") ? '<button id="quiz-next">Continue</button>' : ""}</div>`;
 }
 
-function resetWorkshop(): void {
-  if (!window.confirm("Reset your workshop and clear all unlocked field notes?")) return;
-  try {
-    localStorage.removeItem("branchcraft-save-v1");
-  } catch {
-    // Reset the in-memory game even if storage is unavailable.
+function notice(message: string): void { app.querySelector("#notice")!.textContent = message; }
+
+function act(action: Action, checkoutTarget?: string): void {
+  if (screen === "glossary") return;
+  const name = app.querySelector<HTMLInputElement>("#name")!.value.trim();
+  const path = app.querySelector<HTMLInputElement>("#path")!.value.trim() || "file.txt";
+  const contents = app.querySelector<HTMLInputElement>("#contents")!.value;
+  const selectedAction = ["branch", "tag", "checkout", "merge", "rebase", "reset", "revert", "cherry-pick"].includes(action);
+  const target = action === "edit" || action === "ignore" ? path : selectedAction ? checkoutTarget ?? (selected || undefined) : undefined;
+  const state = graph();
+  const result = operate(state, action, target, action === "edit" ? contents : name || undefined);
+  if (screen === "sandbox") {
+    undo.push({ graph: structuredClone(state), history: structuredClone(sandboxHistory) }); redo = [];
+    sandboxGraph = result.graph;
+    sandboxHistory.push({ command: result.command, output: result.output, ok: result.ok });
+  } else {
+    lessonGraph = result.graph;
+    history.push({ command: result.command, output: result.output, ok: result.ok });
   }
-  progress = { unlockedLevel: 0, graph: newGraph(), completed: [] };
-  currentIndex = 0;
-  actionCount = 0;
-  quizIndex = 0;
+  if (result.ok && ["commit", "clone", "init", "checkout", "rebase", "cherry-pick", "revert", "pull", "merge"].includes(action)) selected = headId(result.graph);
+  notice(result.output);
+  update();
+  if (!result.ok) canvas?.reject();
+}
+
+function openLevel(index: number): void {
+  current = index;
   screen = "lesson";
+  lessonGraph = structuredClone(levels[index]!.start);
+  selected = headId(lessonGraph);
+  history = [];
+  quizIndex = null;
+  quizFeedback = "";
   render();
 }
 
-app!.addEventListener("click", (event) => {
-  const target = (event.target as HTMLElement).closest<HTMLElement>("button");
-  if (!target) return;
-  if (target.hasAttribute("data-reset")) {
-    resetWorkshop();
-    return;
-  }
-  if (target.dataset.level !== undefined) {
-    const index = Number(target.dataset.level);
-    if (Number.isInteger(index) && index >= 0 && index < levels.length && index <= progress.unlockedLevel) {
-      currentIndex = index;
-      actionCount = 0;
-      quizIndex = 0;
-      feedback = "";
-      screen = "lesson";
-      render();
-    }
-    return;
-  }
-  if (target.dataset.screen) {
-    const selected = target.dataset.screen as Screen;
-    screen = selected;
-    if (selected === "lesson") {
-      currentIndex = Math.min(currentIndex, progress.unlockedLevel);
-      actionCount = 0;
-    }
+app.addEventListener("click", event => {
+  const button = (event.target as Element).closest<HTMLElement>("button, a[data-screen]");
+  if (!button) return;
+  if (button.dataset.screen) {
+    event.preventDefault();
+    screen = button.dataset.screen as Screen;
+    selected = headId(graph());
     render();
-    return;
-  }
-  if (target.dataset.action === "perform") {
-    performAction();
-    return;
-  }
-  if (target.dataset.action === "start-quiz") {
-    quizIndex = 0;
-    feedback = "";
-    screen = "quiz";
-    render();
-    return;
-  }
-  if (target.dataset.action === "next") {
-    if (currentIndex < levels.length - 1) currentIndex += 1;
-    else screen = "glossary";
-    actionCount = 0;
-    quizIndex = 0;
-    feedback = "";
-    screen = screen === "glossary" ? "glossary" : "lesson";
-    render();
-    return;
-  }
-  if (target.dataset.answer !== undefined) {
-    chooseAnswer(Number(target.dataset.answer));
-    return;
-  }
-  if (target.dataset.sandbox) {
-    const action = target.dataset.sandbox as "jar" | "pipe" | "commit";
-    if (action === "jar") sandboxJars = Math.min(sandboxJars + 1, 4);
-    if (action === "pipe") sandboxPipes = Math.min(sandboxPipes + 1, 5);
-    stage?.sandboxAction(action);
-    if (action === "commit") {
-      recordAction(progress.graph, commitLevel, true);
-      persist();
-      const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
-      if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
-    } else {
-      const hint = app!.querySelector<HTMLElement>(".sandbox-hint");
-      if (hint) hint.textContent = `${sandboxJars} jars · ${sandboxPipes} pipes · no saves are required`;
+  } else if (button.dataset.level !== undefined) {
+    const index = Number(button.dataset.level);
+    if (index <= progress.unlockedLevel) openLevel(index);
+  } else if (button.dataset.action) act(button.dataset.action as Action);
+  else if (button.dataset.answer !== undefined && quizIndex !== null && quizIndex < 3) {
+    if (quizFeedback.startsWith("Correct")) return;
+    const question = levels[current]!.quiz[quizIndex]!;
+    quizFeedback = Number(button.dataset.answer) === question.answer ? `Correct. ${question.explanation}` : "Not quite — look at the graph and try again.";
+    renderCompletion();
+  } else switch (button.id) {
+    case "reset-level": openLevel(current); break;
+    case "hint": notice(levels[current]!.hint); break;
+    case "start-quiz": quizIndex = 0; quizFeedback = ""; renderCompletion(); break;
+    case "quiz-next":
+      if (quizIndex === null) break;
+      quizIndex++; quizFeedback = "";
+      if (quizIndex === 3) {
+        if (!progress.completed.includes(current)) progress.completed.push(current);
+        progress.unlockedLevel = Math.min(levels.length - 1, Math.max(progress.unlockedLevel, current + 1));
+        saveGame(progress);
+      }
+      renderCompletion(); break;
+    case "next":
+      if (current + 1 < levels.length) openLevel(current + 1);
+      else { screen = "glossary"; render(); }
+      break;
+    case "undo": case "redo": {
+      const source = button.id === "undo" ? undo : redo;
+      const destination = button.id === "undo" ? redo : undo;
+      const snapshot = source.pop();
+      if (snapshot) {
+        destination.push({ graph: structuredClone(sandboxGraph), history: structuredClone(sandboxHistory) });
+        sandboxGraph = snapshot.graph; sandboxHistory = snapshot.history; selected = headId(sandboxGraph); update();
+      }
+      break;
     }
+    case "export": {
+      const blob = new Blob([sandboxHistory.map(entry => `$ ${entry.command}\n${entry.output}`).join("\n\n") + "\n"], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a"); link.href = url; link.download = "branchcraft-history.txt"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); break;
+    }
+    case "clear-sandbox":
+      undo.push({ graph: structuredClone(sandboxGraph), history: structuredClone(sandboxHistory) });
+      redo = []; sandboxGraph = newGraph(); sandboxHistory = []; selected = headId(sandboxGraph); update(); break;
+    case "reset-progress":
+      if (confirm("Reset all course progress?")) { progress.unlockedLevel = 0; progress.completed = []; saveGame(progress); openLevel(0); }
+      break;
   }
+});
+
+document.addEventListener("keydown", event => {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.target instanceof HTMLInputElement || screen === "glossary") return;
+  const shortcuts: Record<string, Action> = { e: "edit", s: "stage", c: "commit", b: "branch", m: "merge" };
+  const action = shortcuts[event.key.toLowerCase()];
+  if (action) { event.preventDefault(); act(action); }
 });
 
 render();

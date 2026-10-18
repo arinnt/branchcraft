@@ -1,19 +1,24 @@
-import type { LevelDefinition } from "./types";
+import { newGraph } from "../graph.ts";
+import { follow } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = follow(newGraph(), [{ action: "branch", target: "c0", name: "feature" }]);
+const solution: SolutionStep[] = [{ action: "checkout", target: "feature" }];
 
 const level: LevelDefinition = {
   id: "checkout",
-  term: "Checkout / Switch",
-  definition: "Switching moves your working context to another branch or commit.",
-  metaphor: "Turn the tap selector to pour from a different recipe line.",
-  command: "git switch <branch>",
-  action: "Turn the selector",
-  instruction: "Slide the handle between the main and experiment pipes.",
-  color: "#62b6cb",
-  graphKind: "branch",
+  term: "Checkout",
+  definition: "Checking out a branch attaches HEAD to it and updates the working files to its commit snapshot.",
+  command: "git checkout feature",
+  instruction: "Switch from main to the existing feature branch without adding any commits.",
+  hint: "Choose Checkout and target the feature branch, not its commit ID.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "What changes when you switch branches?", options: ["Your working context", "The repository owner", "The commit's hash"], answer: 0, explanation: "Switching updates the working tree to the selected branch." },
-    { prompt: "Which modern command switches branches?", options: ["git switch <branch>", "git move <branch>", "git pull <branch>"], answer: 0, explanation: "git switch is the dedicated branch-switching command." },
-    { prompt: "Does switching itself merge your branches?", options: ["No", "Yes, always", "Only on GitHub"], answer: 0, explanation: "Switching changes context; it does not combine histories." },
+    { prompt: "What does HEAD follow after your checkout?", options: ["The feature branch", "The origin remote", "A release tag"], answer: 0, explanation: "Checking out feature attaches HEAD to that branch." },
+    { prompt: "Did switching branches create a commit in your graph?", options: ["Yes, a merge commit", "No", "Yes, a new root"], answer: 1, explanation: "Checkout changes the active reference and working snapshot, not history." },
+    { prompt: "Why did main stay at the root after your switch?", options: ["Checkout deleted its history", "Branches cannot move", "Checkout does not advance other branches"], answer: 2, explanation: "Neither branch moved; only HEAD changed from main to feature." },
   ],
 };
 

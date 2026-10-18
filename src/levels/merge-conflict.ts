@@ -1,19 +1,28 @@
-import type { LevelDefinition } from "./types";
+import { diverged, follow } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = diverged(true);
+const solution: SolutionStep[] = [
+  { action: "merge", target: "feature" },
+  { action: "edit", target: "README.md", name: "Main and feature documentation" },
+  { action: "stage" },
+  { action: "commit", name: "Resolve documentation conflict" },
+];
 
 const level: LevelDefinition = {
   id: "merge-conflict",
-  term: "Merge Conflict",
-  definition: "A merge conflict happens when Git cannot automatically reconcile competing edits.",
-  metaphor: "Two colors meet in one tube; choose the blend before the jar can be sealed.",
-  command: "git status  →  edit files  →  git add <file>",
-  action: "Resolve the blend",
-  instruction: "Choose a color for the tangled stream, then press the resolve control.",
-  color: "#ed729a",
-  graphKind: "merge",
+  term: "Merge conflict",
+  definition: "A merge conflict requires a person to choose final file contents before Git can finish integrating incompatible edits.",
+  command: "git merge feature; git add README.md; git commit",
+  instruction: "Merge feature into main. When it stops with a conflict, resolve README.md to 'Main and feature documentation', stage it, and commit as 'Resolve documentation conflict'.",
+  hint: "Both branches changed README.md. Start the merge, edit the conflicting file, stage the resolution, then commit.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "Why can a merge conflict happen?", options: ["Competing edits overlap", "A branch has a name", "The repository is cloned"], answer: 0, explanation: "Git asks for help when it cannot safely combine competing changes." },
-    { prompt: "Who chooses the final resolution?", options: ["A person edits the result", "Git always guesses", "The remote deletes both edits"], answer: 0, explanation: "You resolve the file, then stage the resolution." },
-    { prompt: "What is a useful first command during a conflict?", options: ["git status", "git release", "git clone"], answer: 0, explanation: "git status shows conflicted files and what needs attention." },
+    { prompt: "Which file required your resolution in this merge?", options: ["README.md", "feature.txt", ".gitignore"], answer: 0, explanation: "main and feature both changed README.md differently from their common ancestor." },
+    { prompt: "What did staging your resolved README tell Git?", options: ["To delete feature", "That the chosen contents were ready to commit", "To publish a release"], answer: 1, explanation: "Editing chooses the contents; staging marks that resolution for the resulting commit." },
+    { prompt: "What connects the two histories in your finished graph?", options: ["A detached HEAD", "A remote tag", "The two-parent resolution commit on main"], answer: 2, explanation: "Finishing the conflicted merge creates a merge commit retaining both branch tips as parents." },
   ],
 };
 

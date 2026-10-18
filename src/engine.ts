@@ -12,6 +12,7 @@ export interface CommitNode {
 export interface GraphState {
   nodes: CommitNode[];
   branches: Record<string, string>;
+  remoteBranches: Record<string, string>;
   currentBranch: string;
   remoteHead: string;
 }
@@ -24,7 +25,13 @@ export interface SavedGame {
 
 export const newGraph = (): GraphState => {
   const root: CommitNode = { id: "c0", message: "first batch", branch: "main", parents: [], color: "#79c6a3" };
-  return { nodes: [root], branches: { main: root.id }, currentBranch: "main", remoteHead: root.id };
+  return {
+    nodes: [root],
+    branches: { main: root.id },
+    remoteBranches: { main: root.id },
+    currentBranch: "main",
+    remoteHead: root.id,
+  };
 };
 
 function retainRecentNodes(nodes: CommitNode[], branches: Record<string, string>): CommitNode[] {
@@ -57,7 +64,11 @@ export function loadGame(levelCount: number): SavedGame {
       node && typeof node.id === "string" && typeof node.message === "string" &&
       Array.isArray(node.parents) && typeof node.branch === "string",
     );
-    const retainedNodes = retainRecentNodes(nodes.length ? nodes : newGraph().nodes, graph.branches);
+    const remoteBranches = graph.remoteBranches && typeof graph.remoteBranches === "object"
+      ? graph.remoteBranches
+      : typeof graph.remoteHead === "string" ? { main: graph.remoteHead } : {};
+    const allBranches = { ...graph.branches, ...remoteBranches };
+    const retainedNodes = retainRecentNodes(nodes.length ? nodes : newGraph().nodes, allBranches);
     const retainedIds = new Set(retainedNodes.map((node) => node.id));
     const branches = Object.fromEntries(Object.entries(graph.branches).filter(([, id]) =>
       typeof id === "string" && retainedIds.has(id),
@@ -66,6 +77,9 @@ export function loadGame(levelCount: number): SavedGame {
     const safeGraph: GraphState = {
       nodes: retainedNodes,
       branches,
+      remoteBranches: Object.fromEntries(Object.entries(remoteBranches).filter(([, id]) =>
+        typeof id === "string" && retainedIds.has(id),
+      )),
       currentBranch: graph.currentBranch,
       remoteHead: typeof graph.remoteHead === "string" && retainedIds.has(graph.remoteHead)
         ? graph.remoteHead
@@ -93,11 +107,12 @@ export function saveGame(game: SavedGame): void {
   }
 }
 
-export function recordAction(graph: GraphState, level: LevelDefinition, sandbox = false): void {
+export function recordAction(graph: GraphState, level: LevelDefinition, sandbox = false, step = 1): void {
   const branches = { ...graph.branches };
+  const remoteBranches = { ...graph.remoteBranches };
   const current = branches[graph.currentBranch] ?? graph.nodes.at(-1)?.id ?? "c0";
-  const nextId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
   const message = sandbox ? "sandbox batch" : level.term.toLowerCase();
+  const nextId = () => `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   const isAncestor = (ancestor: string, descendant: string): boolean => {
     const pending = [descendant];
     const visited = new Set<string>();
@@ -111,17 +126,17 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
     }
     return false;
   };
-  const addNode = (branch: string, parents: string[], tag?: string) => {
+  const addNode = (branch: string, parents: string[], tag?: string, nodeMessage = message) => {
     const node: CommitNode = {
-      id: nextId,
-      message,
+      id: nextId(),
+      message: nodeMessage,
       branch,
       parents: [...new Set(parents)].filter((id) => graph.nodes.some((item) => item.id === id)),
       color: level.color,
       ...(tag ? { tag } : {}),
     };
     graph.nodes.push(node);
-    branches[branch] = nextId;
+    if (!branch.startsWith("origin/")) branches[branch] = node.id;
     return node;
   };
 
@@ -135,21 +150,50 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
       break;
     }
     case "merge": {
-      const source = branches.experiment;
+      let source = branches.experiment;
       const targetBranch = source && graph.currentBranch === "experiment" && branches.main
         ? "main"
         : graph.currentBranch;
       const target = branches[targetBranch] ?? current;
-      if (source && source !== target) {
-        if (isAncestor(target, source)) branches[targetBranch] = source;
-        else if (!isAncestor(source, target)) addNode(targetBranch, [target, source]);
+      if (!source) {
+        source = target;
+        branches.experiment = source;
+      }
+      if (source === target || isAncestor(source, target)) {
+        source = addNode("experiment", [source], undefined, "feature work").id;
+      }
+      if (source !== target) {
+        if (isAncestor(target, source) && level.id !== "merge-conflict") branches[targetBranch] = source;
+        else if (level.id === "merge-conflict" || !isAncestor(source, target)) {
+          addNode(targetBranch, [target, source], undefined, level.id === "merge-conflict" ? "conflict resolution" : message);
+        }
       }
       graph.currentBranch = targetBranch;
       break;
     }
     case "remote": {
-      if (level.id === "push" || level.id === "fetch-pull" || level.id === "clone") graph.remoteHead = current;
-      else {
+      if (level.id === "push") {
+        remoteBranches[graph.currentBranch] = current;
+        graph.remoteHead = current;
+      } else if (level.id === "clone") {
+        remoteBranches.main = current;
+        graph.remoteHead = current;
+      } else if (level.id === "fetch-pull") {
+        const branch = graph.currentBranch;
+        const remote = remoteBranches[branch] ?? remoteBranches.main ?? current;
+        if (step % 2 === 1) {
+          const upstream = addNode(`origin/${branch}`, [remote], undefined, "upstream update");
+          remoteBranches[branch] = upstream.id;
+          graph.remoteHead = upstream.id;
+        } else {
+          const local = branches[branch] ?? current;
+          const upstream = remoteBranches[branch] ?? remoteBranches.main ?? local;
+          if (isAncestor(local, upstream)) branches[branch] = upstream;
+          else if (!isAncestor(upstream, local)) {
+            addNode(branch, [local, upstream], undefined, "pull merge");
+          }
+        }
+      } else {
         const forkBranch = "my-fork";
         if (!branches[forkBranch]) branches[forkBranch] = current;
         graph.currentBranch = forkBranch;
@@ -158,7 +202,11 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
     }
     case "reset": {
       if (level.id === "revert-reset") addNode(graph.currentBranch, [current]);
-      else if (graph.nodes.length > 1) branches[graph.currentBranch] = graph.nodes.at(-2)?.id ?? current;
+      else {
+        const currentNode = graph.nodes.find((node) => node.id === current);
+        const previous = currentNode?.parents[0];
+        if (previous) branches[graph.currentBranch] = previous;
+      }
       break;
     }
     case "tag": {
@@ -169,6 +217,39 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
       break;
     }
     case "commit":
+      if (level.id === "rebase") {
+        const base = branches.main ?? current;
+        let source = branches.experiment ?? current;
+        const baseAncestors = new Set<string>();
+        const pending = [base];
+        while (pending.length) {
+          const id = pending.pop()!;
+          if (baseAncestors.has(id)) continue;
+          baseAncestors.add(id);
+          const node = graph.nodes.find((item) => item.id === id);
+          if (node) pending.push(...node.parents);
+        }
+        const commitsToReplay: CommitNode[] = [];
+        const visited = new Set<string>();
+        while (!baseAncestors.has(source) && !visited.has(source)) {
+          visited.add(source);
+          const node = graph.nodes.find((item) => item.id === source);
+          if (!node) break;
+          commitsToReplay.push(node);
+          source = node.parents[0] ?? "";
+          if (!source) break;
+        }
+        if (!commitsToReplay.length) {
+          commitsToReplay.push(addNode("experiment", [branches.experiment ?? current], undefined, "feature work"));
+        }
+        let rebasedOn = base;
+        for (const commit of commitsToReplay.reverse()) {
+          rebasedOn = addNode("experiment", [rebasedOn], undefined, `rebase: ${commit.message}`).id;
+        }
+        branches.experiment = rebasedOn;
+        graph.currentBranch = "experiment";
+        break;
+      }
       addNode(graph.currentBranch, [current]);
       break;
     case "stash":
@@ -177,7 +258,8 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
   }
 
   graph.branches = branches;
-  graph.nodes = retainRecentNodes(graph.nodes, branches);
+  graph.remoteBranches = remoteBranches;
+  graph.nodes = retainRecentNodes(graph.nodes, { ...branches, ...remoteBranches });
 }
 
 interface Particle {
@@ -221,6 +303,10 @@ export class AudioEngine {
 }
 
 export class CanvasStage {
+  private readonly canvas: HTMLCanvasElement;
+  private level: LevelDefinition | null;
+  private progress: number;
+  private readonly onAction: () => void;
   private readonly context: CanvasRenderingContext2D;
   private readonly particles: Particle[] = [];
   private readonly audio = new AudioEngine();
@@ -237,12 +323,16 @@ export class CanvasStage {
   private readonly resizeObserver: ResizeObserver;
 
   constructor(
-    private readonly canvas: HTMLCanvasElement,
-    private level: LevelDefinition | null,
-    private progress: number,
-    private readonly onAction: () => void,
+    canvas: HTMLCanvasElement,
+    level: LevelDefinition | null,
+    progress: number,
+    onAction: () => void,
     sandbox?: { jars: number; pipes: number },
   ) {
+    this.canvas = canvas;
+    this.level = level;
+    this.progress = progress;
+    this.onAction = onAction;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Canvas is unavailable in this browser.");
     this.context = context;
@@ -648,14 +738,18 @@ export function drawCommitGraph(canvas: HTMLCanvasElement, graph: GraphState): v
     ctx.fillStyle = name === graph.currentBranch ? "#f3ba62" : "#80c5a6";
     ctx.fillText(name, Math.max(4, x), point.y - 11);
   });
-  ctx.fillStyle = "#7390c8";
-  ctx.fillText("origin", 8, height - 12);
-  const remote = positions.get(graph.remoteHead);
-  if (remote) {
-    ctx.strokeStyle = "#7390c8";
-    ctx.beginPath();
-    ctx.moveTo(remote.x, remote.y);
-    ctx.lineTo(30, height - 17);
-    ctx.stroke();
-  }
+  Object.entries(graph.remoteBranches).slice(0, 3).forEach(([name, id], index) => {
+    const point = positions.get(id);
+    const label = `origin/${name}`;
+    const y = height - 12 - index * 14;
+    ctx.fillStyle = "#7390c8";
+    ctx.fillText(label, 8, y);
+    if (point) {
+      ctx.strokeStyle = "#7390c8";
+      ctx.beginPath();
+      ctx.moveTo(point.x, point.y);
+      ctx.lineTo(30, y - 3);
+      ctx.stroke();
+    }
+  });
 }

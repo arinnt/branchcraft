@@ -16,6 +16,7 @@ let actionCount = 0;
 let quizIndex = 0;
 let feedback = "";
 let stage: CanvasStage | undefined;
+let graphResizeObserver: ResizeObserver | undefined;
 let sandboxJars = 1;
 let sandboxPipes = 1;
 
@@ -200,6 +201,8 @@ function sandboxContent(): string {
 function render(): void {
   stage?.dispose();
   stage = undefined;
+  graphResizeObserver?.disconnect();
+  graphResizeObserver = undefined;
   const noRail = screen === "glossary" || screen === "sandbox";
   const content = screen === "lesson" ? lessonContent()
     : screen === "recap" ? recapContent()
@@ -210,7 +213,11 @@ function render(): void {
   app!.innerHTML = `${navigation()}<div class="app-shell ${noRail ? "no-rail" : ""}">${noRail ? "" : sidebar()}<main class="main-area">${content}</main></div><footer class="site-footer"><span>BRANCHCRAFT <span class="footer-sep">/</span> A LITTLE GIT, HANDS-ON</span><span>MADE OF PIXELS, PARTICLES &amp; PROCEDURAL SOUNDS</span></footer>`;
 
   const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
-  if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
+  if (graphCanvas) {
+    drawCommitGraph(graphCanvas, progress.graph);
+    graphResizeObserver = new ResizeObserver(() => drawCommitGraph(graphCanvas, progress.graph));
+    graphResizeObserver.observe(graphCanvas);
+  }
 
   const gameCanvas = app!.querySelector<HTMLCanvasElement>(".game-canvas");
   if (gameCanvas) {
@@ -227,7 +234,7 @@ function render(): void {
 function performAction(): void {
   if (screen !== "lesson" || actionCount >= 3) return;
   actionCount += 1;
-  recordAction(progress.graph, levels[currentIndex]!);
+  recordAction(progress.graph, levels[currentIndex]!, false, actionCount);
   persist();
   stage?.setProgress(actionCount);
   const stepLabel = app!.querySelector<HTMLElement>("[data-step-label]");

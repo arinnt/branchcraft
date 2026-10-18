@@ -1,5 +1,6 @@
 import { CanvasStage, drawCommitGraph, loadGame, newGraph, recordAction, saveGame, type SavedGame } from "./engine";
 import { levels } from "./levels";
+import commitLevel from "./levels/commit";
 import "./style.css";
 
 type Screen = "lesson" | "recap" | "quiz" | "passed" | "glossary" | "sandbox";
@@ -284,7 +285,7 @@ app!.addEventListener("click", (event) => {
   }
   if (target.dataset.level !== undefined) {
     const index = Number(target.dataset.level);
-    if (index <= progress.unlockedLevel) {
+    if (Number.isInteger(index) && index >= 0 && index < levels.length && index <= progress.unlockedLevel) {
       currentIndex = index;
       actionCount = 0;
       quizIndex = 0;
@@ -335,7 +336,7 @@ app!.addEventListener("click", (event) => {
     if (action === "pipe") sandboxPipes = Math.min(sandboxPipes + 1, 5);
     stage?.sandboxAction(action);
     if (action === "commit") {
-      recordAction(progress.graph, levels[2]! , true);
+      recordAction(progress.graph, commitLevel, true);
       persist();
       const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
       if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);

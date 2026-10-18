@@ -9,6 +9,8 @@ npm install
 npm run dev
 ```
 
+Run `npm test` to check the graph operations (requires Node.js 22.6 or newer).
+
 Complete a physical workshop action in each module, review the term and command, then answer all three quiz questions to unlock the next term. Progress is saved in local storage when the browser allows it. The glossary lists unlocked terms, their definitions, metaphors, and commands. Sandbox mode is an open jar-and-pipe playground.
 
 ## Build and deploy

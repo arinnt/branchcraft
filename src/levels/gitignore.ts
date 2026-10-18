@@ -1,19 +1,36 @@
-import type { LevelDefinition } from "./types";
+import { headId, newGraph } from "../graph.ts";
+import { follow } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = follow(newGraph(), [
+  { action: "edit", target: "build/output.js", name: "Generated build output" },
+]);
+const solution: SolutionStep[] = [
+  { action: "ignore", target: "build/" },
+  { action: "stage" },
+  { action: "commit", name: "Ignore generated build output" },
+];
 
 const level: LevelDefinition = {
   id: "gitignore",
   term: ".gitignore",
-  definition: "A .gitignore file tells Git which untracked files or paths to leave out.",
-  metaphor: "Set a sieve over the jar so scraps like spills never enter the recipe archive.",
-  command: "echo '*.log' >> .gitignore",
-  action: "Set the sieve",
-  instruction: "Drag scraps behind the sieve; keep project ingredients in the jar.",
-  color: "#84c17c",
-  graphKind: "commit",
+  definition: ".gitignore specifies untracked file patterns Git should exclude from ordinary staging. It does not untrack files already in commits.",
+  command: "printf 'build/\\n' >> .gitignore; git add .gitignore; git commit",
+  instruction: "Add build/ to .gitignore, stage the ignore rule without the generated output, and commit as 'Ignore generated build output'.",
+  hint: "Choose Ignore with build/ as the pattern, then Stage and Commit. Keep build/output.js out of the committed snapshot.",
+  start,
+  goal: follow(start, solution),
+  validateGoal: (graph) => {
+    const tree = graph.commits.find((commit) => commit.id === headId(graph))?.tree;
+    return !!tree
+      && (tree[".gitignore"] ?? "").split(/\r?\n/).some((rule) => rule.trim() === "build/")
+      && !Object.keys(tree).some((path) => path.startsWith("build/"));
+  },
+  solution,
   quiz: [
-    { prompt: "What does .gitignore list?", options: ["Untracked paths Git should ignore", "Commits to publish", "Branches to merge"], answer: 0, explanation: ".gitignore patterns keep matching untracked files out of status." },
-    { prompt: "Can adding a path to .gitignore untrack a file already committed?", options: ["No, it is already tracked", "Yes, it deletes the history", "Only after a push"], answer: 0, explanation: "Ignoring does not stop tracking a file already in the index." },
-    { prompt: "Where are ignore patterns kept?", options: ["In a .gitignore file", "In the commit hash", "In HEAD only"], answer: 0, explanation: "Patterns are written in .gitignore files." },
+    { prompt: "Which file belongs in the commit you just created?", options: ["build/output.js only", "Every generated file", ".gitignore, but not build/output.js"], answer: 2, explanation: "The ignore rule is versioned configuration, while the untracked generated output is excluded from staging." },
+    { prompt: "Did your ignore rule delete build/output.js from the working directory?", options: ["No, it only excluded the untracked file", "Yes, ignore deletes files", "Yes, it moved the file to origin"], answer: 0, explanation: "Ignoring an untracked file does not remove its local contents." },
+    { prompt: "Would the new rule remove an already tracked build file from history?", options: ["Yes, from every commit", "No, ignore rules do not untrack existing files", "Yes, after checkout"], answer: 1, explanation: "The build output in this exercise was untracked. Already tracked files require explicit removal from the index to stop tracking them." },
   ],
 };
 

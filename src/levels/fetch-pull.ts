@@ -1,19 +1,23 @@
-import type { LevelDefinition } from "./types";
+import { follow, remoteAhead } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = remoteAhead();
+const solution: SolutionStep[] = [{ action: "fetch" }, { action: "pull" }];
 
 const level: LevelDefinition = {
   id: "fetch-pull",
-  term: "Fetch vs Pull",
-  definition: "Fetch downloads remote updates without integrating them; pull fetches and integrates them.",
-  metaphor: "Fetch brings a jar to your bench; pull brings it in and pours it into your batch.",
-  command: "git fetch  ·  git pull",
-  action: "Fetch, then pull",
-  instruction: "First bring down the remote jar; then pour its contents into your work.",
-  color: "#8aa6ff",
-  graphKind: "remote",
+  term: "Fetch and pull",
+  definition: "Fetch updates remote-tracking information; pull fetches and then integrates the remote branch into the current branch.",
+  command: "git fetch origin; git pull origin main",
+  instruction: "Fetch origin's documentation commit, then pull it into local main so the working README matches origin.",
+  hint: "Fetch first to inspect origin/main without moving main. Pull then fast-forwards main to the downloaded commit.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "What does git fetch do?", options: ["Downloads updates without integrating them", "Deletes the remote", "Always creates a release"], answer: 0, explanation: "Fetch updates remote-tracking references but leaves your current branch unchanged." },
-    { prompt: "What does git pull usually do?", options: ["Fetches, then integrates updates", "Only shows a graph", "Uploads local changes"], answer: 0, explanation: "Pull combines fetching with an integration step." },
-    { prompt: "Which is safer for inspecting updates first?", options: ["Fetch", "Reset", "Push"], answer: 0, explanation: "Fetch lets you inspect incoming commits before integrating them." },
+    { prompt: "Which reference did your fetch update before main moved?", options: ["A release tag", "origin/main", "HEAD's branch name"], answer: 1, explanation: "Fetch updated the remote-tracking reference while leaving local main and its working files unchanged." },
+    { prompt: "Why did your pull need no merge commit?", options: ["Local main had no independent changes", "Pull never merges", "The remote had no commits"], answer: 0, explanation: "The remote commit descends directly from local main, allowing a fast-forward." },
+    { prompt: "Which file arrived in your working directory after the pull?", options: ["feature.txt", ".gitignore", "README.md"], answer: 2, explanation: "The pulled commit records README.md with 'Published documentation'." },
   ],
 };
 

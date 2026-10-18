@@ -1,19 +1,28 @@
-import type { LevelDefinition } from "./types";
+import { newGraph } from "../graph.ts";
+import { follow } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = follow(newGraph(), [
+  { action: "edit", target: "draft.md", name: "Unfinished release notes" },
+  { action: "stage" },
+  { action: "edit", target: "draft.md", name: "Unfinished release notes with examples" },
+]);
+const solution: SolutionStep[] = [{ action: "stash" }];
 
 const level: LevelDefinition = {
   id: "stash",
   term: "Stash",
-  definition: "Stashing temporarily shelves uncommitted changes so you can return to them later.",
-  metaphor: "Tuck an unfinished jar under the bench without sealing a permanent recipe card.",
-  command: "git stash  ·  git stash pop",
-  action: "Tuck it away",
-  instruction: "Slide the unfinished jar under the bench, then bring it back out.",
-  color: "#d58bb8",
-  graphKind: "stash",
+  definition: "A stash saves unfinished working and staged changes so you can temporarily return to a clean checkout.",
+  command: "git stash",
+  instruction: "Stash the unfinished draft, preserving its staged and working versions while leaving main clean.",
+  hint: "Choose Stash. The goal has one saved entry and no new history commit; Pop would restore and remove that entry.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "What is stash useful for?", options: ["Temporarily shelving uncommitted changes", "Publishing commits", "Creating a remote fork"], answer: 0, explanation: "Stash clears changes from the working tree without committing them." },
-    { prompt: "Does a stash normally add a commit to your branch?", options: ["No, it stores work temporarily", "Yes, always", "Only to GitHub"], answer: 0, explanation: "Stashed work is stored separately from the normal branch history." },
-    { prompt: "Which command can restore and remove the latest stash?", options: ["git stash pop", "git push pop", "git branch pop"], answer: 0, explanation: "git stash pop reapplies the stash and removes it from the stash list." },
+    { prompt: "Where did your unfinished draft go?", options: ["Into a release tag", "Into the saved stash entry", "To origin/main"], answer: 1, explanation: "The stash retains both the staged draft and the newer working draft." },
+    { prompt: "Did stashing advance main in this graph?", options: ["No, main still points to the same commit", "Yes, to a merge", "Yes, to the remote tip"], answer: 0, explanation: "The game represents stash entries separately from the branch's commit history." },
+    { prompt: "What would Pop do to the entry you just created?", options: ["Publish it on GitHub", "Create a branch", "Restore its changes and remove the saved entry"], answer: 2, explanation: "A successful stash pop reapplies the saved work and removes that stash entry." },
   ],
 };
 

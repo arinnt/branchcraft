@@ -1,19 +1,23 @@
-import type { LevelDefinition } from "./types";
+import { diverged, follow } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = diverged();
+const solution: SolutionStep[] = [{ action: "merge", target: "feature" }];
 
 const level: LevelDefinition = {
   id: "merge",
   term: "Merge",
-  definition: "Merging combines the changes from one branch into another.",
-  metaphor: "Join two pipes so both batches flow into one shared jar.",
-  command: "git merge <branch>",
-  action: "Join the pipes",
-  instruction: "Pull both ends of the tubing toward the center to combine the streams.",
-  color: "#e9a23b",
-  graphKind: "merge",
+  definition: "Merging integrates another branch's history into the current branch while retaining both histories.",
+  command: "git merge feature",
+  instruction: "Merge feature into main. Preserve both independent changes with a two-parent merge commit.",
+  hint: "HEAD already follows main. Choose Merge with feature as the target.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "What does merge do?", options: ["Combines branch changes", "Copies a remote repository", "Hides a commit"], answer: 0, explanation: "Merge joins histories so changes from one branch are included in another." },
-    { prompt: "What can a merge commit have?", options: ["Two parent commits", "No parents ever", "A remote URL as parent"], answer: 0, explanation: "A merge commit joins the tips of both histories." },
-    { prompt: "Which command merges a branch into your current one?", options: ["git merge <branch>", "git join <branch>", "git commit <branch>"], answer: 0, explanation: "Run git merge while on the branch you want to merge into." },
+    { prompt: "Why does your new merge commit have two parents?", options: ["It records the previous main and feature tips", "It cloned two remotes", "Every commit has two parents"], answer: 0, explanation: "Both branches had independent commits, so the merge joins their tips." },
+    { prompt: "Which branch advanced to your merge commit?", options: ["feature only", "main", "Neither branch"], answer: 1, explanation: "The merge ran while HEAD was attached to main, so main advanced." },
+    { prompt: "Which files survive in the merged snapshot?", options: ["Only main.txt", "Only feature.txt", "README.md, main.txt, and feature.txt"], answer: 2, explanation: "The independent edits affect different paths, so the merge preserves both changes and their shared README." },
   ],
 };
 

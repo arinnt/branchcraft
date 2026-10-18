@@ -1,19 +1,23 @@
-import type { LevelDefinition } from "./types";
+import { emptyGraph, follow, remoteAhead } from "./scenarios.ts";
+import type { LevelDefinition, SolutionStep } from "./types.ts";
+
+const start = { ...emptyGraph(), origin: remoteAhead().origin };
+const solution: SolutionStep[] = [{ action: "clone" }];
 
 const level: LevelDefinition = {
   id: "clone",
   term: "Clone",
-  definition: "Cloning copies a remote repository and its history onto your machine.",
-  metaphor: "Fill a clean jar from the shared pantry, bringing its recipe cards along.",
-  command: "git clone <url>",
-  action: "Clone the jar",
-  instruction: "Drag the pantry jar toward your bench to make a local copy.",
-  color: "#79c6a3",
-  graphKind: "remote",
+  definition: "Cloning creates a local repository from a remote repository's history and checks out its default branch.",
+  command: "git clone <repository-url>",
+  instruction: "Clone the configured origin so local main and origin/main point to its published documentation commit.",
+  hint: "Choose Clone in the empty local repository. The remote already contains two commits.",
+  start,
+  goal: follow(start, solution),
+  solution,
   quiz: [
-    { prompt: "What does cloning bring to your machine?", options: ["Just a link", "A copy of the repository and its history", "Only open pull requests"], answer: 1, explanation: "A clone includes the remote repository's files and history." },
-    { prompt: "Which command makes a clone?", options: ["git copy", "git clone <url>", "git fetch --clone"], answer: 1, explanation: "git clone takes a repository URL and creates a local copy." },
-    { prompt: "Is the pantry jar changed by cloning?", options: ["No, cloning makes a separate local copy", "Yes, it is emptied", "Only after a merge"], answer: 0, explanation: "Cloning copies the project; it does not alter the source repository." },
+    { prompt: "Where does local main point after your clone?", options: ["The newest commit on origin/main", "An unrelated root", "A stash entry"], answer: 0, explanation: "The clone copies origin's history and checks out its main tip." },
+    { prompt: "What does origin/main represent in your cloned graph?", options: ["An independent working directory", "The last known position of remote main", "A release tag"], answer: 1, explanation: "origin/main is a local remote-tracking reference recording the remote main position." },
+    { prompt: "Did cloning your graph change the remote commits?", options: ["Yes, it rewrote every parent", "Yes, it deleted main", "No, it copied existing history locally"], answer: 2, explanation: "Cloning reads the remote. Editing and committing in the clone do not publish anything automatically." },
   ],
 };
 

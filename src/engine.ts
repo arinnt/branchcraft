@@ -1,755 +1,247 @@
-import type { LevelDefinition } from "./levels/types";
+import { headId, type Graph, type Commit } from "./graph";
 
-export interface CommitNode {
-  id: string;
-  message: string;
-  branch: string;
-  parents: string[];
-  color: string;
-  tag?: string;
+const NS = "http://www.w3.org/2000/svg";
+const svg = <K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap[K] =>
+  document.createElementNS(NS, tag);
+
+type Point = { x: number; y: number };
+
+function visibleCommits(graph: Graph): Commit[] {
+  const objects = new Map([...graph.origin.commits, ...graph.commits].map(commit => [commit.id, commit]));
+  const pending = [
+    ...Object.values(graph.branches), ...Object.values(graph.tags),
+    ...Object.values(graph.tracking), ...Object.values(graph.origin.branches),
+    headId(graph), ...(graph.conflict ? [graph.conflict.target] : []),
+  ];
+  const reachable = new Set<string>();
+  while (pending.length) {
+    const id = pending.pop()!;
+    const commit = objects.get(id);
+    if (!commit || reachable.has(id)) continue;
+    reachable.add(id);
+    pending.push(...commit.parents);
+  }
+  return [...objects.values()].filter(commit => reachable.has(commit.id));
 }
 
-export interface GraphState {
-  nodes: CommitNode[];
-  branches: Record<string, string>;
-  remoteBranches: Record<string, string>;
-  currentBranch: string;
-  remoteHead: string;
-}
-
-export interface SavedGame {
-  unlockedLevel: number;
-  graph: GraphState;
-  completed: number[];
-}
-
-export const newGraph = (): GraphState => {
-  const root: CommitNode = { id: "c0", message: "first batch", branch: "main", parents: [], color: "#79c6a3" };
-  return {
-    nodes: [root],
-    branches: { main: root.id },
-    remoteBranches: { main: root.id },
-    currentBranch: "main",
-    remoteHead: root.id,
+function layout(commits: Commit[], graph: Graph): Map<string, Point> {
+  const refs = [...Object.values(graph.branches), ...Object.values(graph.tracking), ...Object.values(graph.tags),
+    ...Object.entries(graph.origin.branches).filter(([name, id]) => graph.tracking[`origin/${name}`] !== id).map(([, id]) => id),
+    ...("commit" in graph.head ? [graph.head.commit] : [])];
+  const maxRefs = Math.max(1, ...commits.map(commit => refs.filter(id => id === commit.id).length));
+  const top = 130 + Math.max(0, maxRefs - 2) * 23;
+  const laneHeight = Math.max(85, maxRefs * 23 + 50);
+  const points = new Map<string, Point>();
+  const occupied = new Map<number, Set<number>>();
+  const visiting = new Set<string>();
+  const place = (commit: Commit): Point => {
+    const existing = points.get(commit.id);
+    if (existing) return existing;
+    if (visiting.has(commit.id)) return { x: 65, y: top };
+    visiting.add(commit.id);
+    const parents = commit.parents.flatMap(id => {
+      const parent = commits.find(item => item.id === id);
+      return parent ? [place(parent)] : [];
+    });
+    const depth = parents.length ? Math.max(...parents.map(point => (point.x - 65) / 145)) + 1 : 0;
+    let lane = parents[0] ? (parents[0].y - top) / laneHeight : 0;
+    const used = occupied.get(depth) ?? new Set<number>();
+    while (used.has(lane)) lane++;
+    used.add(lane);
+    occupied.set(depth, used);
+    const point = { x: 65 + depth * 145, y: top + lane * laneHeight };
+    points.set(commit.id, point);
+    visiting.delete(commit.id);
+    return point;
   };
-};
-
-function retainRecentNodes(nodes: CommitNode[], branches: Record<string, string>): CommitNode[] {
-  if (nodes.length <= 60) return nodes;
-  const retained = new Set<string>();
-  if (nodes[0]) retained.add(nodes[0].id);
-  for (const id of Object.values(branches)) {
-    if (nodes.some((node) => node.id === id)) retained.add(id);
-  }
-  for (let index = nodes.length - 1; index >= 0 && retained.size < 60; index -= 1) {
-    retained.add(nodes[index]!.id);
-  }
-  return nodes.filter((node) => retained.has(node.id));
+  commits.forEach(place);
+  return points;
 }
 
-const STORAGE_KEY = "branchcraft-save-v1";
-
-export function loadGame(levelCount: number): SavedGame {
-  const fallback: SavedGame = { unlockedLevel: 0, graph: newGraph(), completed: [] };
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return fallback;
-    const value = parsed as Partial<SavedGame>;
-    if (!Number.isInteger(value.unlockedLevel) || !Array.isArray(value.completed) || !value.graph) return fallback;
-    const graph = value.graph as GraphState;
-    if (!Array.isArray(graph.nodes) || !graph.branches || typeof graph.currentBranch !== "string") return fallback;
-    const nodes = graph.nodes.filter((node) =>
-      node && typeof node.id === "string" && typeof node.message === "string" &&
-      Array.isArray(node.parents) && typeof node.branch === "string",
-    );
-    const remoteBranches = graph.remoteBranches && typeof graph.remoteBranches === "object"
-      ? graph.remoteBranches
-      : typeof graph.remoteHead === "string" ? { main: graph.remoteHead } : {};
-    const allBranches = { ...graph.branches, ...remoteBranches };
-    const retainedNodes = retainRecentNodes(nodes.length ? nodes : newGraph().nodes, allBranches);
-    const retainedIds = new Set(retainedNodes.map((node) => node.id));
-    const branches = Object.fromEntries(Object.entries(graph.branches).filter(([, id]) =>
-      typeof id === "string" && retainedIds.has(id),
-    ));
-    if (!Object.keys(branches).length) branches.main = retainedNodes.at(-1)!.id;
-    const safeGraph: GraphState = {
-      nodes: retainedNodes,
-      branches,
-      remoteBranches: Object.fromEntries(Object.entries(remoteBranches).filter(([, id]) =>
-        typeof id === "string" && retainedIds.has(id),
-      )),
-      currentBranch: graph.currentBranch,
-      remoteHead: typeof graph.remoteHead === "string" && retainedIds.has(graph.remoteHead)
-        ? graph.remoteHead
-        : retainedNodes[0]!.id,
-    };
-    if (!safeGraph.branches[safeGraph.currentBranch]) safeGraph.currentBranch = Object.keys(safeGraph.branches)[0] ?? "main";
-    const completed = value.completed.filter((index): index is number =>
-      Number.isInteger(index) && index >= 0 && index < levelCount,
-    );
-    return {
-      unlockedLevel: Math.max(0, Math.min(levelCount - 1, value.unlockedLevel as number)),
-      graph: safeGraph,
-      completed,
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-export function saveGame(game: SavedGame): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-  } catch {
-    // Storage can be disabled or full; the current session remains playable.
-  }
-}
-
-export function recordAction(graph: GraphState, level: LevelDefinition, sandbox = false, step = 1): void {
-  const branches = { ...graph.branches };
-  const remoteBranches = { ...graph.remoteBranches };
-  const current = branches[graph.currentBranch] ?? graph.nodes.at(-1)?.id ?? "c0";
-  const message = sandbox ? "sandbox batch" : level.term.toLowerCase();
-  const nextId = () => `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-  const isAncestor = (ancestor: string, descendant: string): boolean => {
-    const pending = [descendant];
-    const visited = new Set<string>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (id === ancestor) return true;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      const node = graph.nodes.find((item) => item.id === id);
-      if (node) pending.push(...node.parents);
-    }
-    return false;
-  };
-  const addNode = (branch: string, parents: string[], tag?: string, nodeMessage = message) => {
-    const node: CommitNode = {
-      id: nextId(),
-      message: nodeMessage,
-      branch,
-      parents: [...new Set(parents)].filter((id) => graph.nodes.some((item) => item.id === id)),
-      color: level.color,
-      ...(tag ? { tag } : {}),
-    };
-    graph.nodes.push(node);
-    if (!branch.startsWith("origin/")) branches[branch] = node.id;
-    return node;
-  };
-
-  switch (level.graphKind) {
-    case "branch": {
-      if (level.id === "checkout") {
-        graph.currentBranch = branches.experiment ? "experiment" : "main";
-      } else if (level.id === "branch") {
-        branches.experiment ??= current;
-      }
-      break;
-    }
-    case "merge": {
-      let source = branches.experiment;
-      const targetBranch = source && graph.currentBranch === "experiment" && branches.main
-        ? "main"
-        : graph.currentBranch;
-      const target = branches[targetBranch] ?? current;
-      if (!source) {
-        source = target;
-        branches.experiment = source;
-      }
-      if (source === target || isAncestor(source, target)) {
-        source = addNode("experiment", [source], undefined, "feature work").id;
-      }
-      if (source !== target) {
-        if (isAncestor(target, source) && level.id !== "merge-conflict") branches[targetBranch] = source;
-        else if (level.id === "merge-conflict" || !isAncestor(source, target)) {
-          addNode(targetBranch, [target, source], undefined, level.id === "merge-conflict" ? "conflict resolution" : message);
-        }
-      }
-      graph.currentBranch = targetBranch;
-      break;
-    }
-    case "remote": {
-      if (level.id === "push") {
-        remoteBranches[graph.currentBranch] = current;
-        graph.remoteHead = current;
-      } else if (level.id === "clone") {
-        remoteBranches.main = current;
-        graph.remoteHead = current;
-      } else if (level.id === "fetch-pull") {
-        const branch = graph.currentBranch;
-        const remote = remoteBranches[branch] ?? remoteBranches.main ?? current;
-        if (step % 2 === 1) {
-          const upstream = addNode(`origin/${branch}`, [remote], undefined, "upstream update");
-          remoteBranches[branch] = upstream.id;
-          graph.remoteHead = upstream.id;
-        } else {
-          const local = branches[branch] ?? current;
-          const upstream = remoteBranches[branch] ?? remoteBranches.main ?? local;
-          if (isAncestor(local, upstream)) branches[branch] = upstream;
-          else if (!isAncestor(upstream, local)) {
-            addNode(branch, [local, upstream], undefined, "pull merge");
-          }
-        }
-      } else {
-        const forkBranch = "my-fork";
-        if (!branches[forkBranch]) branches[forkBranch] = current;
-        graph.currentBranch = forkBranch;
-      }
-      break;
-    }
-    case "reset": {
-      if (level.id === "revert-reset") addNode(graph.currentBranch, [current]);
-      else {
-        const currentNode = graph.nodes.find((node) => node.id === current);
-        const previous = currentNode?.parents[0];
-        if (previous) branches[graph.currentBranch] = previous;
-      }
-      break;
-    }
-    case "tag": {
-      if (level.id === "tag-release") {
-        const head = graph.nodes.find((node) => node.id === current);
-        if (head) head.tag = "v1.0";
-      }
-      break;
-    }
-    case "commit":
-      if (level.id === "rebase") {
-        const base = branches.main ?? current;
-        let source = branches.experiment ?? current;
-        const baseAncestors = new Set<string>();
-        const pending = [base];
-        while (pending.length) {
-          const id = pending.pop()!;
-          if (baseAncestors.has(id)) continue;
-          baseAncestors.add(id);
-          const node = graph.nodes.find((item) => item.id === id);
-          if (node) pending.push(...node.parents);
-        }
-        const commitsToReplay: CommitNode[] = [];
-        const visited = new Set<string>();
-        while (!baseAncestors.has(source) && !visited.has(source)) {
-          visited.add(source);
-          const node = graph.nodes.find((item) => item.id === source);
-          if (!node) break;
-          commitsToReplay.push(node);
-          source = node.parents[0] ?? "";
-          if (!source) break;
-        }
-        if (!commitsToReplay.length) {
-          commitsToReplay.push(addNode("experiment", [branches.experiment ?? current], undefined, "feature work"));
-        }
-        let rebasedOn = base;
-        for (const commit of commitsToReplay.reverse()) {
-          rebasedOn = addNode("experiment", [rebasedOn], undefined, `rebase: ${commit.message}`).id;
-        }
-        branches.experiment = rebasedOn;
-        graph.currentBranch = "experiment";
-        break;
-      }
-      addNode(graph.currentBranch, [current]);
-      break;
-    case "stash":
-    case "review":
-      break;
-  }
-
-  graph.branches = branches;
-  graph.remoteBranches = remoteBranches;
-  graph.nodes = retainRecentNodes(graph.nodes, { ...branches, ...remoteBranches });
-}
-
-interface Particle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-}
-
-export class AudioEngine {
-  private context?: AudioContext;
-
-  play(kind: "drop" | "seal" | "whoosh" = "drop"): void {
-    try {
-      this.context ??= new AudioContext();
-      if (this.context.state === "suspended") void this.context.resume();
-      const oscillator = this.context.createOscillator();
-      const gain = this.context.createGain();
-      const now = this.context.currentTime;
-      oscillator.type = kind === "whoosh" ? "sawtooth" : "sine";
-      oscillator.frequency.setValueAtTime(kind === "seal" ? 420 : kind === "whoosh" ? 220 : 520, now);
-      oscillator.frequency.exponentialRampToValueAtTime(kind === "whoosh" ? 90 : 180, now + 0.16);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
-      oscillator.connect(gain);
-      gain.connect(this.context.destination);
-      oscillator.start(now);
-      oscillator.stop(now + 0.2);
-    } catch {
-      // Audio is an enhancement; browsers may block it until user interaction.
-    }
-  }
-  dispose(): void {
-    if (this.context) {
-      void this.context.close().catch(() => undefined);
-      this.context = undefined;
-    }
-  }
-}
-
-export class CanvasStage {
-  private readonly canvas: HTMLCanvasElement;
-  private level: LevelDefinition | null;
-  private progress: number;
-  private readonly onAction: () => void;
-  private readonly context: CanvasRenderingContext2D;
-  private readonly particles: Particle[] = [];
-  private readonly audio = new AudioEngine();
-  private frame = 0;
-  private width = 0;
-  private height = 0;
-  private tick = 0;
-  private jars = 1;
-  private pipes = 1;
-  private volumes = 0;
-  private mixR = 0;
-  private mixG = 0;
-  private mixB = 0;
-  private readonly resizeObserver: ResizeObserver;
+/** The graph is an SVG canvas so its interactive nodes remain keyboard accessible. */
+export class GraphCanvas {
+  private root = svg("svg");
+  private actual = svg("g");
+  private ghost = svg("g");
+  private selected = "";
+  private graph: Graph;
+  private nodes = new Map<string, SVGGElement>();
+  private labels = new Map<string, SVGGElement>();
+  private edges = new Map<string, SVGPathElement>();
+  private observer: ResizeObserver;
 
   constructor(
-    canvas: HTMLCanvasElement,
-    level: LevelDefinition | null,
-    progress: number,
-    onAction: () => void,
-    sandbox?: { jars: number; pipes: number },
+    private host: HTMLElement,
+    graph: Graph,
+    private goal: Graph | undefined,
+    private onSelect: (id: string) => void,
+    private onCheckout: (ref: string) => void,
   ) {
-    this.canvas = canvas;
-    this.level = level;
-    this.progress = progress;
-    this.onAction = onAction;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Canvas is unavailable in this browser.");
-    this.context = context;
-    if (sandbox) {
-      this.jars = sandbox.jars;
-      this.pipes = sandbox.pipes;
-    }
-    canvas.addEventListener("pointerdown", this.handlePointer);
-    canvas.addEventListener("keydown", this.handleKey);
-    this.resizeObserver = new ResizeObserver(() => this.resize());
-    this.resizeObserver.observe(canvas);
-    this.resize();
-    this.frame = requestAnimationFrame(this.draw);
+    this.graph = graph;
+    this.root.setAttribute("class", "graph-canvas");
+    this.root.setAttribute("role", "group");
+    this.root.setAttribute("aria-label", "Interactive commit graph. Arrow keys select commits; Enter checks out a commit or branch.");
+    this.actual.setAttribute("class", "actual-graph");
+    this.ghost.setAttribute("class", "goal-graph");
+    this.root.append(this.actual, this.ghost);
+    this.host.append(this.root);
+    this.observer = new ResizeObserver(() => this.size());
+    this.observer.observe(this.host);
+    this.update(graph, "");
   }
 
-  setProgress(progress: number): void {
-    this.progress = progress;
+  private size(): void {
+    const box = this.root.viewBox.baseVal;
+    this.root.style.width = `${Math.max(this.host.clientWidth - 2, box.width)}px`;
   }
 
-  sandboxAction(action: "jar" | "pipe" | "commit"): void {
-    if (action === "jar") this.jars = Math.min(this.jars + 1, 4);
-    if (action === "pipe") this.pipes = Math.min(this.pipes + 1, 5);
-    if (action === "commit") this.audio.play("seal");
-    this.burst(0.5, 0.55, action === "pipe" ? "#62b6cb" : "#f3ba62");
+  update(graph: Graph, selected: string): void {
+    this.graph = graph;
+    this.selected = selected;
+    const commits = visibleCommits(graph);
+    const positions = layout(commits, graph);
+    const goalCommits = this.goal ? visibleCommits(this.goal) : [];
+    const goalPositions = this.goal ? layout(goalCommits, this.goal) : new Map<string, Point>();
+    const points = [...positions.values(), ...goalPositions.values()];
+    const width = Math.max(650, ...points.map(point => point.x + 130));
+    const actualHeight = Math.max(260, ...[...positions.values()].map(point => point.y + 110));
+    const goalHeight = this.goal ? Math.max(210, ...[...goalPositions.values()].map(point => point.y + 80)) : 0;
+    this.root.setAttribute("viewBox", `0 0 ${width} ${actualHeight + goalHeight}`);
+    this.root.style.height = `${actualHeight + goalHeight}px`;
+    this.size();
+    this.draw(this.actual, commits, graph, positions, 0, false);
+    this.ghost.replaceChildren();
+    if (this.goal) this.draw(this.ghost, goalCommits, this.goal, goalPositions, actualHeight, true);
   }
 
-  dispose(): void {
-    cancelAnimationFrame(this.frame);
-    this.resizeObserver.disconnect();
-    this.canvas.removeEventListener("pointerdown", this.handlePointer);
-    this.canvas.removeEventListener("keydown", this.handleKey);
-    this.audio.dispose();
-  }
-
-  private readonly handlePointer = (event: PointerEvent): void => {
-    event.preventDefault();
-    const bounds = this.canvas.getBoundingClientRect();
-    const x = (event.clientX - bounds.left) / bounds.width;
-    const y = (event.clientY - bounds.top) / bounds.height;
-    const color = this.level?.color ?? ["#f3ba62", "#62b6cb", "#a78bfa"][this.volumes % 3]!;
-    this.burst(x, y, color);
-    this.audio.play(this.progress >= 2 ? "seal" : "drop");
-    if (this.level) this.onAction();
-    else this.addLiquid(color);
-  };
-
-  private readonly handleKey = (event: KeyboardEvent): void => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      this.burst(0.5, 0.6, this.level?.color ?? "#f3ba62");
-      this.audio.play("drop");
-      if (this.level) this.onAction();
-      else this.addLiquid(["#f3ba62", "#62b6cb", "#a78bfa"][this.volumes % 3]!);
-    }
-  };
-
-  private addLiquid(color: string): void {
-    const channels = color.slice(1).match(/.{2}/g)?.map((channel) => Number.parseInt(channel, 16)) ?? [0, 0, 0];
-    this.volumes += 1;
-    this.mixR += channels[0] ?? 0;
-    this.mixG += channels[1] ?? 0;
-    this.mixB += channels[2] ?? 0;
-  }
-
-  private mixedColor(): string {
-    if (!this.volumes) return "#f3ba62";
-    return `rgb(${Math.round(this.mixR / this.volumes)}, ${Math.round(this.mixG / this.volumes)}, ${Math.round(this.mixB / this.volumes)})`;
-  }
-
-  private resize(): void {
-    const bounds = this.canvas.getBoundingClientRect();
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    this.width = Math.max(bounds.width, 1);
-    this.height = Math.max(bounds.height, 1);
-    this.canvas.width = Math.round(this.width * ratio);
-    this.canvas.height = Math.round(this.height * ratio);
-    this.context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  }
-
-  private burst(x: number, y: number, color: string): void {
-    for (let index = 0; index < 14; index += 1) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 0.4 + Math.random() * 2.2;
-      this.particles.push({
-        x: x * this.width,
-        y: y * this.height,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed - 1,
-        life: 1,
-      });
-    }
-    if (this.particles.length > 220) this.particles.splice(0, this.particles.length - 220);
-    this.lastColor = color;
-  }
-
-  private lastColor = "#f3ba62";
-
-  private readonly draw = (): void => {
-    this.tick += 1;
-    const { context: ctx, width: w, height: h } = this;
-    ctx.clearRect(0, 0, w, h);
-    const wash = ctx.createLinearGradient(0, 0, w, h);
-    wash.addColorStop(0, "#222a23");
-    wash.addColorStop(1, "#151b17");
-    ctx.fillStyle = wash;
-    ctx.fillRect(0, 0, w, h);
-    this.drawWorkbench(ctx, w, h);
-    if (this.level) this.drawLesson(ctx, w, h);
-    else this.drawSandbox(ctx, w, h);
-    this.drawParticles(ctx);
-    this.frame = requestAnimationFrame(this.draw);
-  };
-
-  private drawWorkbench(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const floor = h * 0.79;
-    ctx.fillStyle = "#34342b";
-    ctx.fillRect(0, floor, w, h - floor);
-    ctx.fillStyle = "#474438";
-    ctx.fillRect(0, floor, w, 7);
-    ctx.fillStyle = "rgba(6, 10, 7, 0.35)";
-    ctx.fillRect(0, floor + 7, w, 12);
-    ctx.strokeStyle = "rgba(231, 196, 132, 0.08)";
-    ctx.lineWidth = 1;
-    for (let x = 0; x < w; x += 34) {
-      ctx.beginPath();
-      ctx.moveTo(x, floor + 12);
-      ctx.lineTo(x + 22, h);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "rgba(242, 218, 174, 0.42)";
-    ctx.font = "11px ui-monospace, monospace";
-    ctx.fillText("THE BRANCHCRAFT WORKSHOP", 17, h - 14);
-  }
-
-  private drawLesson(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const level = this.level!;
-    const scale = Math.min(w / 620, h / 380, 1.2);
-    const cx = w * 0.5;
-    const cy = h * 0.52;
-    const jarW = 126 * scale;
-    const jarH = 180 * scale;
-    const top = cy - jarH / 2;
-    const eased = 0.35 + 0.16 * Math.sin(this.tick * 0.025);
-
-    ctx.save();
-    ctx.translate(0, Math.sin(this.tick * 0.018) * 2);
-    if (["branch", "checkout", "merge", "merge-conflict", "rebase"].includes(level.id)) {
-      ctx.lineCap = "round";
-      ctx.lineWidth = 15 * scale;
-      ctx.strokeStyle = "rgba(119, 187, 174, 0.4)";
-      ctx.beginPath();
-      ctx.moveTo(cx - 190 * scale, cy + 18 * scale);
-      ctx.bezierCurveTo(cx - 90 * scale, cy + 18 * scale, cx - 55 * scale, cy - 72 * scale, cx, cy - 72 * scale);
-      ctx.bezierCurveTo(cx + 55 * scale, cy - 72 * scale, cx + 90 * scale, cy + 18 * scale, cx + 190 * scale, cy + 18 * scale);
-      ctx.stroke();
-      ctx.strokeStyle = level.color;
-      ctx.globalAlpha = 0.48;
-      ctx.lineWidth = 5 * scale;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    const jarX = level.id === "clone" || level.id === "fork" ? cx - 70 * scale : cx;
-    ctx.fillStyle = "rgba(16, 25, 20, 0.38)";
-    ctx.beginPath();
-    ctx.ellipse(jarX, top + jarH + 9, jarW * 0.64, 11 * scale, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    const fillHeight = jarH * (0.12 + Math.min(this.progress, 3) * 0.19 + (level.id === "repository" ? 0.12 : 0));
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(jarX - jarW / 2, top, jarW, jarH, [8 * scale, 8 * scale, 24 * scale, 24 * scale]);
-    ctx.clip();
-    const liquid = ctx.createLinearGradient(0, top + jarH, 0, top);
-    liquid.addColorStop(0, level.color);
-    liquid.addColorStop(1, "#ecdb9e");
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = liquid;
-    ctx.fillRect(jarX - jarW / 2, top + jarH - fillHeight, jarW, fillHeight);
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
-    ctx.lineWidth = 2 * scale;
-    for (let row = 0; row < 4; row += 1) {
-      const y = top + jarH - fillHeight + row * 13 * scale;
-      if (y < top + jarH) {
-        ctx.beginPath();
-        ctx.ellipse(jarX, y, jarW * 0.43, 4 * scale, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-    ctx.strokeStyle = "rgba(232, 243, 230, 0.65)";
-    ctx.lineWidth = 3 * scale;
-    ctx.beginPath();
-    ctx.roundRect(jarX - jarW / 2, top, jarW, jarH, [8 * scale, 8 * scale, 24 * scale, 24 * scale]);
-    ctx.stroke();
-    ctx.fillStyle = "#9b8966";
-    ctx.fillRect(jarX - jarW * 0.32, top - 13 * scale, jarW * 0.64, 19 * scale);
-    ctx.strokeStyle = "#cfb889";
-    ctx.strokeRect(jarX - jarW * 0.32, top - 13 * scale, jarW * 0.64, 19 * scale);
-
-    const labelWidth = 100 * scale;
-    ctx.fillStyle = "rgba(240, 231, 198, 0.94)";
-    ctx.fillRect(jarX - labelWidth / 2, cy - 20 * scale, labelWidth, 41 * scale);
-    ctx.fillStyle = "#33362c";
-    ctx.textAlign = "center";
-    ctx.font = `bold ${Math.max(10, 13 * scale)}px ui-monospace, monospace`;
-    ctx.fillText(level.term.toUpperCase().slice(0, 14), jarX, cy - 1 * scale);
-    ctx.font = `${Math.max(9, 10 * scale)}px ui-monospace, monospace`;
-    ctx.fillText(`BATCH ${this.progress + 1}/3`, jarX, cy + 13 * scale);
-
-    if (level.id === "merge-conflict") {
-      ctx.strokeStyle = "#ed729a";
-      ctx.lineWidth = 5 * scale;
-      ctx.beginPath();
-      ctx.moveTo(cx - 28 * scale, cy - 29 * scale);
-      ctx.lineTo(cx + 28 * scale, cy + 28 * scale);
-      ctx.moveTo(cx + 28 * scale, cy - 29 * scale);
-      ctx.lineTo(cx - 28 * scale, cy + 28 * scale);
-      ctx.stroke();
-    }
-    if (level.id === "gitignore") {
-      ctx.strokeStyle = "#f4f1e6";
-      ctx.lineWidth = 5 * scale;
-      ctx.beginPath();
-      ctx.moveTo(jarX + 92 * scale, top + 30 * scale);
-      ctx.lineTo(jarX + 130 * scale, top + 70 * scale);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = level.color;
-    ctx.globalAlpha = 0.25;
-    ctx.beginPath();
-    ctx.arc(jarX, cy + 35 * scale, 66 * scale + Math.sin(this.tick * 0.05) * 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.restore();
-
-    const dots = Math.min(this.progress, 3);
-    for (let index = 0; index < 3; index += 1) {
-      ctx.beginPath();
-      ctx.arc(w * 0.5 - 24 + index * 24, h * 0.91, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = index < dots ? level.color : "rgba(235, 232, 213, 0.2)";
-      ctx.fill();
-    }
-    if (level.id === "clone") this.drawMiniJar(ctx, cx + 130 * scale, cy + 28 * scale, level.color, "REMOTE", scale * eased);
-    if (level.id === "fork") this.drawMiniJar(ctx, cx + 125 * scale, cy + 28 * scale, "#f3ba62", "UPSTREAM", scale);
-    if (level.id === "merge") this.drawMiniJar(ctx, cx + 185 * scale, cy - 45 * scale, "#62b6cb", "FEATURE", scale * 0.78);
-  }
-
-  private drawMiniJar(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, label: string, scale: number): void {
-    const width = 72 * scale;
-    const height = 90 * scale;
-    ctx.fillStyle = color;
-    ctx.globalAlpha = 0.28;
-    ctx.beginPath();
-    ctx.roundRect(x - width / 2, y - height / 2, width, height, 9 * scale);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = "rgba(232, 243, 230, 0.54)";
-    ctx.lineWidth = 2 * scale;
-    ctx.stroke();
-    ctx.fillStyle = "#e9e3d1";
-    ctx.textAlign = "center";
-    ctx.font = `${Math.max(8, 9 * scale)}px ui-monospace, monospace`;
-    ctx.fillText(label, x, y + height * 0.62);
-  }
-
-  private drawSandbox(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const cx = w * 0.5;
-    const cy = h * 0.47;
-    const colors = ["#f3ba62", "#62b6cb", "#a78bfa", "#79c6a3"];
-    ctx.strokeStyle = "rgba(117, 190, 174, 0.52)";
-    ctx.lineWidth = 17;
-    ctx.lineCap = "round";
-    for (let index = 0; index < this.pipes; index += 1) {
-      const offset = (index - (this.pipes - 1) / 2) * 31;
-      ctx.beginPath();
-      ctx.moveTo(25, cy + offset);
-      ctx.bezierCurveTo(w * 0.34, cy + offset, w * 0.3, cy - 30, cx, cy - 30);
-      ctx.stroke();
-      ctx.fillStyle = colors[index % colors.length];
-      ctx.globalAlpha = 0.2;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    for (let index = 0; index < this.jars; index += 1) {
-      const x = cx + (index - (this.jars - 1) / 2) * Math.min(130, w / 5);
-      const top = cy - 80;
-      const height = 135;
-      const width = 75;
-      ctx.fillStyle = this.volumes ? this.mixedColor() : colors[index % colors.length]!;
-      ctx.globalAlpha = 0.3 + (this.volumes ? 0.12 : 0);
-      ctx.beginPath();
-      ctx.roundRect(x - width / 2, top, width, height, [8, 8, 18, 18]);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = "rgba(232, 243, 230, 0.62)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.fillStyle = "#eee8d5";
-      ctx.font = "10px ui-monospace, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`JAR ${index + 1}`, x, top + height + 20);
-    }
-    ctx.fillStyle = this.mixedColor();
-    ctx.beginPath();
-    ctx.arc(31, 34, 11, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#e9e5d5";
-    ctx.font = "9px ui-monospace, monospace";
-    ctx.textAlign = "left";
-    ctx.fillText(`RGB ${this.volumes ? Math.round(this.mixR / this.volumes) : 243} / ${this.volumes ? Math.round(this.mixG / this.volumes) : 186} / ${this.volumes ? Math.round(this.mixB / this.volumes) : 98}`, 49, 37);
-    ctx.fillStyle = "rgba(235, 232, 213, 0.65)";
-    ctx.font = "11px ui-monospace, monospace";
-    ctx.textAlign = "center";
-    ctx.fillText(`${this.volumes} POUR${this.volumes === 1 ? "" : "S"} · TAP TO MIX`, cx, h * 0.88);
-  }
-
-  private drawParticles(ctx: CanvasRenderingContext2D): void {
-    for (let index = this.particles.length - 1; index >= 0; index -= 1) {
-      const particle = this.particles[index]!;
-      particle.x += particle.vx;
-      particle.y += particle.vy;
-      particle.vy += 0.035;
-      particle.life -= 0.018;
-      if (particle.life <= 0) {
-        this.particles.splice(index, 1);
-        continue;
-      }
-      ctx.globalAlpha = particle.life;
-      ctx.fillStyle = this.lastColor;
-      ctx.beginPath();
-      ctx.arc(particle.x, particle.y, 2.5 + particle.life, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-}
-
-export function drawCommitGraph(canvas: HTMLCanvasElement, graph: GraphState): void {
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const bounds = canvas.getBoundingClientRect();
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(220, bounds.width);
-  const height = Math.max(150, bounds.height);
-  canvas.width = width * ratio;
-  canvas.height = height * ratio;
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#171d18";
-  ctx.fillRect(0, 0, width, height);
-
-  const nodes = graph.nodes.slice(-9);
-  const positions = new Map<string, { x: number; y: number }>();
-  const branchNames = [...new Set(nodes.map((node) => node.branch))];
-  const lane = new Map(branchNames.map((branch, index) => [branch, 44 + index * 32]));
-  const stepX = Math.min(47, (width - 46) / Math.max(nodes.length - 1, 1));
-  const startX = width - 22 - (nodes.length - 1) * stepX;
-  nodes.forEach((node, index) => positions.set(node.id, { x: startX + index * stepX, y: lane.get(node.branch) ?? 44 }));
-
-  ctx.lineWidth = 2;
-  nodes.forEach((node) => {
-    const end = positions.get(node.id);
-    if (!end) return;
-    node.parents.forEach((parent) => {
-      const start = positions.get(parent);
-      if (!start) return;
-      ctx.strokeStyle = node.color;
-      ctx.globalAlpha = 0.68;
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.bezierCurveTo(start.x + 20, start.y, end.x - 20, end.y, end.x, end.y);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+  private draw(
+    layer: SVGGElement, commits: Commit[], graph: Graph,
+    points: Map<string, Point>, offset: number, ghost: boolean,
+  ): void {
+    layer.querySelectorAll(".graph-title").forEach(node => node.remove());
+    const title = svg("text");
+    title.setAttribute("class", "graph-title");
+    title.setAttribute("x", "24");
+    title.setAttribute("y", String(offset + 25));
+    title.textContent = ghost ? "GOAL · match these connections and refs" : "YOUR REPOSITORY · click a commit or branch";
+    layer.append(title);
+    const liveIds = new Set(commits.map(commit => commit.id));
+    if (!ghost) this.nodes.forEach((node, id) => {
+      if (!liveIds.has(id)) { node.remove(); this.nodes.delete(id); }
     });
-  });
+    const edgeKeys = new Set<string>();
+    commits.forEach(commit => {
+      const point = points.get(commit.id)!;
+      commit.parents.forEach(parent => {
+        const from = points.get(parent);
+        if (!from) return;
+        const key = `${parent}:${commit.id}`;
+        edgeKeys.add(key);
+        const existing = ghost ? undefined : this.edges.get(key);
+        const edge = existing ?? svg("path");
+        edge.setAttribute("class", "edge");
+        edge.setAttribute("d", `M ${from.x} ${from.y + offset} C ${from.x + 65} ${from.y + offset}, ${point.x - 65} ${point.y + offset}, ${point.x} ${point.y + offset}`);
+        if (!existing) layer.insertBefore(edge, layer.firstChild);
+        if (!ghost) this.edges.set(key, edge);
+      });
+      let group = ghost ? undefined : this.nodes.get(commit.id);
+      if (!group) {
+        group = svg("g");
+        const circle = svg("circle");
+        circle.setAttribute("r", "17");
+        const text = svg("text");
+        text.setAttribute("y", "36");
+        text.setAttribute("text-anchor", "middle");
+        text.textContent = commit.id;
+        const description = svg("title");
+        description.textContent = `${commit.id}: ${commit.message}; parents ${commit.parents.join(", ") || "none"}`;
+        group.append(circle, text, description);
+        if (!ghost) {
+          group.setAttribute("role", "button");
+          group.setAttribute("tabindex", "0");
+          group.addEventListener("click", () => this.onSelect(commit.id));
+          group.addEventListener("keydown", event => this.key(event, commit.id));
+          this.nodes.set(commit.id, group);
+        }
+        layer.append(group);
+      }
+      group.setAttribute("class", `commit-node${commit.id === this.selected && !ghost ? " selected" : ""}${commit.id === headId(graph) ? " head" : ""}`);
+      group.setAttribute("aria-label", `Commit ${commit.id}: ${commit.message}${commit.id === headId(graph) ? ", HEAD" : ""}`);
+      group.setAttribute("aria-pressed", String(!ghost && commit.id === this.selected));
+      group.style.transform = `translate(${point.x}px, ${point.y + offset}px)`;
+    });
+    if (!ghost) this.edges.forEach((edge, key) => {
+      if (!edgeKeys.has(key)) { edge.remove(); this.edges.delete(key); }
+    });
+    const refs = [
+      ...Object.entries(graph.branches).map(([name, id]) => ({ name, id, checkout: name, remote: false })),
+      ...Object.entries(graph.tracking).map(([name, id]) => ({ name, id, checkout: id, remote: true })),
+      ...Object.entries(graph.origin.branches).filter(([name, id]) => graph.tracking[`origin/${name}`] !== id)
+        .map(([name, id]) => ({ name: `origin server/${name}`, id, checkout: "", remote: true })),
+      ...Object.entries(graph.tags).map(([name, id]) => ({ name: `tag: ${name}`, id, checkout: id, remote: false })),
+    ];
+    if ("commit" in graph.head) refs.unshift({ name: "HEAD (detached)", id: graph.head.commit, checkout: graph.head.commit, remote: false });
+    const stacks = new Map<string, number>();
+    const labelKeys = new Set<string>();
+    refs.forEach(ref => {
+      const point = points.get(ref.id);
+      if (!point) return;
+      const stack = stacks.get(ref.id) ?? 0;
+      stacks.set(ref.id, stack + 1);
+      const key = `${ref.remote ? "remote" : "local"}:${ref.name}`;
+      labelKeys.add(key);
+      let label = ghost ? undefined : this.labels.get(key);
+      const fresh = !label;
+      label ??= svg("g");
+      label.replaceChildren();
+      label.setAttribute("class", `ref-label${ref.remote ? " remote" : ""}`);
+      label.style.transform = `translate(${point.x - 40}px, ${point.y + offset - 40 - stack * 23}px)`;
+      const text = svg("text");
+      const current = "branch" in graph.head && graph.head.branch === ref.checkout;
+      text.textContent = `${current ? "HEAD → " : ""}${ref.name}`;
+      const rect = svg("rect");
+      rect.setAttribute("x", "-5");
+      rect.setAttribute("y", "-14");
+      rect.setAttribute("rx", "5");
+      rect.setAttribute("height", "21");
+      rect.setAttribute("width", String(text.textContent.length * 7 + 12));
+      label.append(rect, text);
+      if (!ghost && ref.checkout && fresh) {
+        label.setAttribute("role", "button");
+        label.setAttribute("tabindex", "0");
+        label.setAttribute("aria-label", `Checkout ${ref.name}`);
+        label.addEventListener("click", () => this.onCheckout(label!.dataset.checkout!));
+        label.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault(); this.onCheckout(label!.dataset.checkout!);
+          }
+        });
+      }
+      label.dataset.checkout = ref.checkout;
+      if (fresh) layer.append(label);
+      if (!ghost) this.labels.set(key, label);
+    });
+    if (!ghost) this.labels.forEach((label, key) => {
+      if (!labelKeys.has(key)) { label.remove(); this.labels.delete(key); }
+    });
+  }
 
-  nodes.forEach((node) => {
-    const point = positions.get(node.id)!;
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
-    ctx.fillStyle = node.color;
-    ctx.fill();
-    ctx.strokeStyle = "#e8e5d4";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = "#c7c8b9";
-    ctx.font = "9px ui-monospace, monospace";
-    ctx.fillText(node.id.slice(0, 5), point.x - 12, point.y + 18);
-    if (node.tag) {
-      ctx.fillStyle = "#f3ba62";
-      ctx.fillText(node.tag, point.x - 12, point.y - 11);
-    }
-  });
+  private key(event: KeyboardEvent, id: string): void {
+    if (event.key === "Enter") { event.preventDefault(); this.onCheckout(id); return; }
+    if (event.key === " ") { event.preventDefault(); this.onSelect(id); return; }
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const ids = visibleCommits(this.graph).filter(commit => this.graph.commits.some(local => local.id === commit.id)).map(commit => commit.id);
+    const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+    const next = ids[(ids.indexOf(id) + delta + ids.length) % ids.length];
+    if (next) { this.onSelect(next); this.nodes.get(next)?.focus(); }
+  }
 
-  const branchEntries = Object.entries(graph.branches);
-  ctx.font = "10px ui-monospace, monospace";
-  branchEntries.slice(0, 4).forEach(([name, id], index) => {
-    const point = positions.get(id) ?? { x: 12, y: 20 + index * 15 };
-    const x = Math.min(point.x + 10, width - name.length * 6.4 - 12);
-    ctx.fillStyle = name === graph.currentBranch ? "#f3ba62" : "#80c5a6";
-    ctx.fillText(name, Math.max(4, x), point.y - 11);
-  });
-  Object.entries(graph.remoteBranches).slice(0, 3).forEach(([name, id], index) => {
-    const point = positions.get(id);
-    const label = `origin/${name}`;
-    const y = height - 12 - index * 14;
-    ctx.fillStyle = "#7390c8";
-    ctx.fillText(label, 8, y);
-    if (point) {
-      ctx.strokeStyle = "#7390c8";
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-      ctx.lineTo(30, y - 3);
-      ctx.stroke();
-    }
-  });
+  reject(): void {
+    this.host.classList.remove("rejected");
+    void this.host.offsetWidth;
+    this.host.classList.add("rejected");
+  }
+
+  dispose(): void { this.observer.disconnect(); this.root.remove(); }
 }

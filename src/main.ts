@@ -32,8 +32,12 @@ function persist(): void {
   saveGame(progress);
 }
 
+function unlockedLevelCount(): number {
+  return Math.max(0, Math.min(progress.unlockedLevel + 1, levels.length));
+}
+
 function navigation(): string {
-  const unlocked = Math.min(progress.unlockedLevel + 1, levels.length);
+  const unlocked = unlockedLevelCount();
   return `
     <header class="topbar">
       <button class="brand" data-screen="lesson" aria-label="Branchcraft home">
@@ -49,13 +53,13 @@ function navigation(): string {
 }
 
 function sidebar(): string {
-  const unlocked = Math.min(progress.unlockedLevel, levels.length - 1);
+  const unlocked = unlockedLevelCount();
   return `
     <aside class="lesson-rail" aria-label="Course levels">
-      <div class="rail-heading"><span>FIELD NOTES</span><span>${String(unlocked + 1).padStart(2, "0")} / ${levels.length}</span></div>
+      <div class="rail-heading"><span>FIELD NOTES</span><span>${String(unlocked).padStart(2, "0")} / ${levels.length}</span></div>
       <ol class="level-list">
         ${levels.map((level, index) => {
-          const isLocked = index > progress.unlockedLevel;
+          const isLocked = index >= unlocked;
           const isDone = progress.completed.includes(index);
           const selected = index === currentIndex && screen !== "glossary" && screen !== "sandbox";
           return `<li><button class="level-link ${selected ? "selected" : ""} ${isLocked ? "locked" : ""} ${isDone ? "completed" : ""}" ${isLocked ? "disabled" : `data-level="${index}"`}>
@@ -156,7 +160,7 @@ function passedContent(): string {
 }
 
 function glossaryContent(): string {
-  const learned = levels.slice(0, Math.min(progress.unlockedLevel + 1, levels.length));
+  const learned = levels.slice(0, unlockedLevelCount());
   return `
     <section class="wide-content">
       <div class="level-kicker"><span>FIELD NOTES</span><span class="kicker-line"></span><span>${learned.length} OF ${levels.length} UNLOCKED</span></div>

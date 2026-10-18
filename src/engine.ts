@@ -95,13 +95,16 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
 
   switch (level.graphKind) {
     case "branch": {
-      const branch = level.id === "checkout" ? "experiment" : `${level.id}`;
-      graph.currentBranch = branch;
-      if (!branches[branch]) branches[branch] = current;
+      if (level.id === "checkout") {
+        graph.currentBranch = branches.experiment ? "experiment" : "main";
+      } else if (level.id === "branch") {
+        branches.experiment ??= current;
+      }
       break;
     }
     case "merge": {
-      addNode(graph.currentBranch, [current, branches.experiment ?? current]);
+      const other = branches.experiment ?? current;
+      if (other !== current) addNode(graph.currentBranch, [current, other]);
       break;
     }
     case "remote": {
@@ -166,19 +169,28 @@ export class AudioEngine {
       // Audio is an enhancement; browsers may block it until user interaction.
     }
   }
+  dispose(): void {
+    if (this.context) {
+      void this.context.close().catch(() => undefined);
+      this.context = undefined;
+    }
+  }
 }
 
 export class CanvasStage {
   private readonly context: CanvasRenderingContext2D;
   private readonly particles: Particle[] = [];
   private readonly audio = new AudioEngine();
-  private readonly frame: number;
+  private frame = 0;
   private width = 0;
   private height = 0;
   private tick = 0;
   private jars = 1;
   private pipes = 1;
   private volumes = 0;
+  private mixR = 0;
+  private mixG = 0;
+  private mixB = 0;
   private readonly resizeObserver: ResizeObserver;
 
   constructor(
@@ -186,10 +198,15 @@ export class CanvasStage {
     private level: LevelDefinition | null,
     private progress: number,
     private readonly onAction: () => void,
+    sandbox?: { jars: number; pipes: number },
   ) {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Canvas is unavailable in this browser.");
     this.context = context;
+    if (sandbox) {
+      this.jars = sandbox.jars;
+      this.pipes = sandbox.pipes;
+    }
     canvas.addEventListener("pointerdown", this.handlePointer);
     canvas.addEventListener("keydown", this.handleKey);
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -206,7 +223,6 @@ export class CanvasStage {
     if (action === "jar") this.jars = Math.min(this.jars + 1, 4);
     if (action === "pipe") this.pipes = Math.min(this.pipes + 1, 5);
     if (action === "commit") this.audio.play("seal");
-    this.volumes += 1;
     this.burst(0.5, 0.55, action === "pipe" ? "#62b6cb" : "#f3ba62");
   }
 
@@ -215,6 +231,7 @@ export class CanvasStage {
     this.resizeObserver.disconnect();
     this.canvas.removeEventListener("pointerdown", this.handlePointer);
     this.canvas.removeEventListener("keydown", this.handleKey);
+    this.audio.dispose();
   }
 
   private readonly handlePointer = (event: PointerEvent): void => {
@@ -222,10 +239,11 @@ export class CanvasStage {
     const bounds = this.canvas.getBoundingClientRect();
     const x = (event.clientX - bounds.left) / bounds.width;
     const y = (event.clientY - bounds.top) / bounds.height;
-    this.burst(x, y, this.level?.color ?? "#f3ba62");
+    const color = this.level?.color ?? ["#f3ba62", "#62b6cb", "#a78bfa"][this.volumes % 3]!;
+    this.burst(x, y, color);
     this.audio.play(this.progress >= 2 ? "seal" : "drop");
     if (this.level) this.onAction();
-    else this.volumes += 1;
+    else this.addLiquid(color);
   };
 
   private readonly handleKey = (event: KeyboardEvent): void => {
@@ -234,9 +252,22 @@ export class CanvasStage {
       this.burst(0.5, 0.6, this.level?.color ?? "#f3ba62");
       this.audio.play("drop");
       if (this.level) this.onAction();
-      else this.volumes += 1;
+      else this.addLiquid(["#f3ba62", "#62b6cb", "#a78bfa"][this.volumes % 3]!);
     }
   };
+
+  private addLiquid(color: string): void {
+    const channels = color.slice(1).match(/.{2}/g)?.map((channel) => Number.parseInt(channel, 16)) ?? [0, 0, 0];
+    this.volumes += 1;
+    this.mixR += channels[0] ?? 0;
+    this.mixG += channels[1] ?? 0;
+    this.mixB += channels[2] ?? 0;
+  }
+
+  private mixedColor(): string {
+    if (!this.volumes) return "#f3ba62";
+    return `rgb(${Math.round(this.mixR / this.volumes)}, ${Math.round(this.mixG / this.volumes)}, ${Math.round(this.mixB / this.volumes)})`;
+  }
 
   private resize(): void {
     const bounds = this.canvas.getBoundingClientRect();
@@ -310,7 +341,6 @@ export class CanvasStage {
     const cy = h * 0.52;
     const jarW = 126 * scale;
     const jarH = 180 * scale;
-    const left = cx - jarW / 2;
     const top = cy - jarH / 2;
     const eased = 0.35 + 0.16 * Math.sin(this.tick * 0.025);
 
@@ -461,7 +491,7 @@ export class CanvasStage {
       const top = cy - 80;
       const height = 135;
       const width = 75;
-      ctx.fillStyle = colors[(index + this.volumes) % colors.length];
+      ctx.fillStyle = this.volumes ? this.mixedColor() : colors[index % colors.length]!;
       ctx.globalAlpha = 0.3 + (this.volumes ? 0.12 : 0);
       ctx.beginPath();
       ctx.roundRect(x - width / 2, top, width, height, [8, 8, 18, 18]);
@@ -475,13 +505,14 @@ export class CanvasStage {
       ctx.textAlign = "center";
       ctx.fillText(`JAR ${index + 1}`, x, top + height + 20);
     }
-    const colorsInMix = this.volumes > 0 ? ["#f3ba62", "#62b6cb", "#a78bfa"] : ["#f3ba62"];
-    colorsInMix.forEach((color, index) => {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(30 + index * 27, 34, 10, 0, Math.PI * 2);
-      ctx.fill();
-    });
+    ctx.fillStyle = this.mixedColor();
+    ctx.beginPath();
+    ctx.arc(31, 34, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e9e5d5";
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(`RGB ${this.volumes ? Math.round(this.mixR / this.volumes) : 243} / ${this.volumes ? Math.round(this.mixG / this.volumes) : 186} / ${this.volumes ? Math.round(this.mixB / this.volumes) : 98}`, 49, 37);
     ctx.fillStyle = "rgba(235, 232, 213, 0.65)";
     ctx.font = "11px ui-monospace, monospace";
     ctx.textAlign = "center";
@@ -527,8 +558,9 @@ export function drawCommitGraph(canvas: HTMLCanvasElement, graph: GraphState): v
   const positions = new Map<string, { x: number; y: number }>();
   const branchNames = [...new Set(nodes.map((node) => node.branch))];
   const lane = new Map(branchNames.map((branch, index) => [branch, 44 + index * 32]));
-  const startX = Math.max(25, width - 23 - (nodes.length - 1) * 47);
-  nodes.forEach((node, index) => positions.set(node.id, { x: startX + index * 47, y: lane.get(node.branch) ?? 44 }));
+  const stepX = Math.min(47, (width - 46) / Math.max(nodes.length - 1, 1));
+  const startX = width - 22 - (nodes.length - 1) * stepX;
+  nodes.forEach((node, index) => positions.set(node.id, { x: startX + index * stepX, y: lane.get(node.branch) ?? 44 }));
 
   ctx.lineWidth = 2;
   nodes.forEach((node) => {

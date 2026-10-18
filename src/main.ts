@@ -1,4 +1,4 @@
-import { CanvasStage, drawCommitGraph, loadGame, newGraph, recordAction, saveGame, type GraphState, type SavedGame } from "./engine";
+import { CanvasStage, drawCommitGraph, loadGame, newGraph, recordAction, saveGame, type SavedGame } from "./engine";
 import { levels } from "./levels";
 import "./style.css";
 
@@ -195,23 +195,27 @@ function sandboxContent(): string {
 function render(): void {
   stage?.dispose();
   stage = undefined;
+  const noRail = screen === "glossary" || screen === "sandbox";
   const content = screen === "lesson" ? lessonContent()
     : screen === "recap" ? recapContent()
       : screen === "quiz" ? quizContent()
         : screen === "passed" ? passedContent()
           : screen === "glossary" ? glossaryContent()
             : sandboxContent();
-  app!.innerHTML = `${navigation()}<div class="app-shell">${screen === "glossary" || screen === "sandbox" ? "" : sidebar()}<main class="main-area">${content}</main></div><footer class="site-footer"><span>BRANCHCRAFT <span class="footer-sep">/</span> A LITTLE GIT, HANDS-ON</span><span>MADE OF PIXELS, PARTICLES &amp; PROCEDURAL SOUNDS</span></footer>`;
+  app!.innerHTML = `${navigation()}<div class="app-shell ${noRail ? "no-rail" : ""}">${noRail ? "" : sidebar()}<main class="main-area">${content}</main></div><footer class="site-footer"><span>BRANCHCRAFT <span class="footer-sep">/</span> A LITTLE GIT, HANDS-ON</span><span>MADE OF PIXELS, PARTICLES &amp; PROCEDURAL SOUNDS</span></footer>`;
 
   const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
   if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
 
   const gameCanvas = app!.querySelector<HTMLCanvasElement>(".game-canvas");
   if (gameCanvas) {
-    stage = new CanvasStage(gameCanvas, screen === "lesson" ? levels[currentIndex]! : null, actionCount, () => performAction());
-    if (screen === "sandbox") {
-      stage.sandboxAction("jar");
-    }
+    stage = new CanvasStage(
+      gameCanvas,
+      screen === "lesson" ? levels[currentIndex]! : null,
+      actionCount,
+      () => performAction(),
+      screen === "sandbox" ? { jars: sandboxJars, pipes: sandboxPipes } : undefined,
+    );
   }
 }
 
@@ -245,7 +249,7 @@ function chooseAnswer(index: number): void {
     render();
     return;
   }
-  feedback = `That's it. ${question.explanation}`;
+  feedback = "";
   quizIndex += 1;
   if (quizIndex === 3) {
     progress.completed = [...new Set([...progress.completed, currentIndex])];
@@ -336,16 +340,9 @@ app!.addEventListener("click", (event) => {
       const graphCanvas = app!.querySelector<HTMLCanvasElement>(".graph-canvas");
       if (graphCanvas) drawCommitGraph(graphCanvas, progress.graph);
     } else {
-      render();
+      const hint = app!.querySelector<HTMLElement>(".sandbox-hint");
+      if (hint) hint.textContent = `${sandboxJars} jars · ${sandboxPipes} pipes · no saves are required`;
     }
-  }
-});
-
-app!.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.target as HTMLElement).matches(".game-canvas")) {
-    event.preventDefault();
-    if (screen === "lesson") performAction();
-    else if (screen === "sandbox") stage?.sandboxAction("jar");
   }
 });
 

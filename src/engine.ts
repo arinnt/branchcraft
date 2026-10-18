@@ -27,6 +27,19 @@ export const newGraph = (): GraphState => {
   return { nodes: [root], branches: { main: root.id }, currentBranch: "main", remoteHead: root.id };
 };
 
+function retainRecentNodes(nodes: CommitNode[], branches: Record<string, string>): CommitNode[] {
+  if (nodes.length <= 60) return nodes;
+  const retained = new Set<string>();
+  if (nodes[0]) retained.add(nodes[0].id);
+  for (const id of Object.values(branches)) {
+    if (nodes.some((node) => node.id === id)) retained.add(id);
+  }
+  for (let index = nodes.length - 1; index >= 0 && retained.size < 60; index -= 1) {
+    retained.add(nodes[index]!.id);
+  }
+  return nodes.filter((node) => retained.has(node.id));
+}
+
 const STORAGE_KEY = "branchcraft-save-v1";
 
 export function loadGame(levelCount: number): SavedGame {
@@ -44,13 +57,19 @@ export function loadGame(levelCount: number): SavedGame {
       node && typeof node.id === "string" && typeof node.message === "string" &&
       Array.isArray(node.parents) && typeof node.branch === "string",
     );
+    const retainedNodes = retainRecentNodes(nodes.length ? nodes : newGraph().nodes, graph.branches);
+    const retainedIds = new Set(retainedNodes.map((node) => node.id));
+    const branches = Object.fromEntries(Object.entries(graph.branches).filter(([, id]) =>
+      typeof id === "string" && retainedIds.has(id),
+    ));
+    if (!Object.keys(branches).length) branches.main = retainedNodes.at(-1)!.id;
     const safeGraph: GraphState = {
-      nodes: nodes.length ? nodes.slice(-60) : newGraph().nodes,
-      branches: Object.fromEntries(Object.entries(graph.branches).filter(([, id]) =>
-        typeof id === "string" && nodes.some((node) => node.id === id),
-      )),
+      nodes: retainedNodes,
+      branches,
       currentBranch: graph.currentBranch,
-      remoteHead: typeof graph.remoteHead === "string" ? graph.remoteHead : "",
+      remoteHead: typeof graph.remoteHead === "string" && retainedIds.has(graph.remoteHead)
+        ? graph.remoteHead
+        : retainedNodes[0]!.id,
     };
     if (!safeGraph.branches[safeGraph.currentBranch]) safeGraph.currentBranch = Object.keys(safeGraph.branches)[0] ?? "main";
     const completed = value.completed.filter((index): index is number =>
@@ -79,6 +98,19 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
   const current = branches[graph.currentBranch] ?? graph.nodes.at(-1)?.id ?? "c0";
   const nextId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
   const message = sandbox ? "sandbox batch" : level.term.toLowerCase();
+  const isAncestor = (ancestor: string, descendant: string): boolean => {
+    const pending = [descendant];
+    const visited = new Set<string>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (id === ancestor) return true;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const node = graph.nodes.find((item) => item.id === id);
+      if (node) pending.push(...node.parents);
+    }
+    return false;
+  };
   const addNode = (branch: string, parents: string[], tag?: string) => {
     const node: CommitNode = {
       id: nextId,
@@ -103,8 +135,16 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
       break;
     }
     case "merge": {
-      const other = branches.experiment ?? current;
-      if (other !== current) addNode(graph.currentBranch, [current, other]);
+      const source = branches.experiment;
+      const targetBranch = source && graph.currentBranch === "experiment" && branches.main
+        ? "main"
+        : graph.currentBranch;
+      const target = branches[targetBranch] ?? current;
+      if (source && source !== target) {
+        if (isAncestor(target, source)) branches[targetBranch] = source;
+        else if (!isAncestor(source, target)) addNode(targetBranch, [target, source]);
+      }
+      graph.currentBranch = targetBranch;
       break;
     }
     case "remote": {
@@ -129,12 +169,15 @@ export function recordAction(graph: GraphState, level: LevelDefinition, sandbox 
       break;
     }
     case "commit":
-      addNode(graph.currentBranch, [current]);
+      if (level.id !== "stash") addNode(graph.currentBranch, [current]);
+      break;
+    case "stash":
+    case "review":
       break;
   }
 
   graph.branches = branches;
-  if (graph.nodes.length > 60) graph.nodes.splice(1, graph.nodes.length - 60);
+  graph.nodes = retainRecentNodes(graph.nodes, branches);
 }
 
 interface Particle {
